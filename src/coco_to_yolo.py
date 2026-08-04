@@ -1,31 +1,38 @@
-"""Convert the FLIR ADAS 1.3 thermal annotations (COCO format) to a YOLO dataset.
+"""Convert the FLIR ADAS v2 thermal annotations (COCO format) to a YOLO dataset.
 
-FLIR ships one ``thermal_annotations.json`` (COCO format) per split under
-``train/`` and ``val/``. This script builds a self-contained Ultralytics dataset::
+FLIR ADAS v2 ships one COCO ``coco.json`` per split, each alongside a ``data/``
+image folder::
+
+    Dataset/FLIR_ADAS_v2/
+    ├── images_thermal_train/{coco.json, data/*.jpg}
+    ├── images_thermal_val/{coco.json, data/*.jpg}
+    └── video_thermal_test/{coco.json, data/*.jpg}
+
+This script builds a self-contained Ultralytics dataset::
 
     <out>/
-    ├── images/{train,val}/FLIR_xxxxx.jpeg   (symlinks to the originals)
-    └── labels/{train,val}/FLIR_xxxxx.txt    (YOLO: `cls cx cy w h`, normalized)
+    ├── images/{train,val,test}/*.jpg   (symlinks to the originals)
+    └── labels/{train,val,test}/*.txt   (YOLO: `cls cx cy w h`, normalized)
 
 and writes/refreshes ``configs/flir_thermal.yaml`` so training always has a
 correct, absolute ``path``.
 
 Key decisions
 -------------
-- Only the 4 classes actually annotated in FLIR are kept, remapped to contiguous
-  YOLO indices: person(1)->0, bicycle(2)->1, car(3)->2, dog(17)->3.
-- Only images that actually exist on disk are included. The public FLIR download
-  references more images than it ships, so ~40% of the JSON entries are skipped.
+- Classes are selected by name via ``--classes`` (default: person bike car) and
+  their COCO ids are looked up from ``coco.json`` — so the mapping stays correct
+  even though v2 renumbered/renamed categories vs v1.3 (e.g. `bicycle`->`bike`).
 - `iscrowd` and degenerate (<1px) boxes are dropped; boxes are clipped to the
-  image bounds (a few FLIR boxes spill over by a pixel or two).
-- Images with no surviving objects get an empty `.txt` — Ultralytics treats these
-  as background, which is what you want for detection.
+  image bounds.
+- Images with no surviving objects get an empty `.txt` — Ultralytics treats
+  these as background, which is what you want for detection.
+- Images referenced by the JSON but missing on disk are skipped.
 
 Usage
 -----
     python src/coco_to_yolo.py \
-        --flir-root Dataset/FLIR_ADAS_1_3 \
-        --out       Dataset/FLIR_ADAS_1_3/yolo
+        --flir-root Dataset/FLIR_ADAS_v2 \
+        --out       Dataset/FLIR_ADAS_v2/yolo
 """
 
 from __future__ import annotations
@@ -36,12 +43,14 @@ import os
 from collections import defaultdict
 from pathlib import Path
 
-# Sparse COCO ids used by FLIR ADAS -> contiguous YOLO class indices.
-# The order here defines the class list written to the data yaml.
-COCO_TO_YOLO = {1: 0, 2: 1, 3: 2, 17: 3}
-YOLO_NAMES = ["person", "bicycle", "car", "dog"]
+# YOLO split name -> FLIR v2 split directory.
+SPLIT_DIRS = {
+    "train": "images_thermal_train",
+    "val": "images_thermal_val",
+    "test": "video_thermal_test",
+}
 
-SPLITS = ("train", "val")
+DEFAULT_CLASSES = ["person", "bike", "car"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,14 +61,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--flir-root",
         type=Path,
-        default=Path("Dataset/FLIR_ADAS_1_3"),
-        help="FLIR root containing train/ and val/ (each with thermal_annotations.json)",
+        default=Path("Dataset/FLIR_ADAS_v2"),
+        help="FLIR ADAS v2 root (contains images_thermal_{train,val}/ and video_thermal_test/)",
     )
     p.add_argument(
         "--out",
         type=Path,
-        default=Path("Dataset/FLIR_ADAS_1_3/yolo"),
+        default=Path("Dataset/FLIR_ADAS_v2/yolo"),
         help="Output root for the YOLO dataset",
+    )
+    p.add_argument(
+        "--classes",
+        nargs="+",
+        default=DEFAULT_CLASSES,
+        help="Category names to keep, in the desired YOLO index order",
     )
     p.add_argument(
         "--copy",
@@ -91,12 +106,20 @@ def link_or_copy(src: Path, dst: Path, *, copy: bool) -> None:
         os.symlink(src.resolve(), dst)
 
 
-def convert_split(split: str, flir_root: Path, out: Path, *, copy: bool) -> dict[str, int]:
-    """Build images/<split> and labels/<split>; return per-split stats."""
-    ann_path = flir_root / split / "thermal_annotations.json"
-    split_root = flir_root / split  # file_name is relative to this (e.g. thermal_8_bit/FLIR_x.jpeg)
+def build_class_map(coco: dict, classes: list[str]) -> dict[int, int]:
+    """Map each kept category's COCO id -> contiguous YOLO index (order = `classes`)."""
+    name_to_id = {c["name"]: c["id"] for c in coco["categories"]}
+    missing = [c for c in classes if c not in name_to_id]
+    if missing:
+        raise SystemExit(f"Class(es) {missing} not found in coco.json. Available: {sorted(name_to_id)}")
+    return {name_to_id[name]: yolo_idx for yolo_idx, name in enumerate(classes)}
 
-    with ann_path.open() as f:
+
+def convert_split(
+    split: str, split_dir: Path, out: Path, coco_to_yolo: dict[int, int], *, copy: bool
+) -> dict[str, int]:
+    """Build images/<split> and labels/<split>; return per-split stats."""
+    with (split_dir / "coco.json").open() as f:
         coco = json.load(f)
 
     images = {img["id"]: img for img in coco["images"]}
@@ -113,25 +136,24 @@ def convert_split(split: str, flir_root: Path, out: Path, *, copy: bool) -> dict
     stats = {"written": 0, "background": 0, "missing": 0, "dropped_boxes": 0}
 
     for img_id, img in images.items():
-        src = split_root / img["file_name"]
+        src = split_dir / img["file_name"]  # file_name is e.g. "data/video-...jpg"
         if not src.exists():
             stats["missing"] += 1
             continue
 
-        stem = Path(img["file_name"]).stem  # FLIR_00001
-        ext = Path(img["file_name"]).suffix  # .jpeg
+        stem = Path(img["file_name"]).stem
+        ext = Path(img["file_name"]).suffix
         link_or_copy(src, img_dir / f"{stem}{ext}", copy=copy)
 
         W, H = img["width"], img["height"]
         lines: list[str] = []
         for ann in anns_by_img.get(img_id, []):
-            if ann.get("iscrowd", 0) == 1:
+            if ann.get("iscrowd"):
                 stats["dropped_boxes"] += 1
                 continue
             cid = ann["category_id"]
-            if cid not in COCO_TO_YOLO:
-                stats["dropped_boxes"] += 1
-                continue
+            if cid not in coco_to_yolo:
+                continue  # class we're not keeping — silently skip
 
             x, y, w, h = ann["bbox"]  # COCO: top-left x, y, width, height (pixels)
             x0 = max(0.0, float(x))
@@ -145,7 +167,7 @@ def convert_split(split: str, flir_root: Path, out: Path, *, copy: bool) -> dict
 
             cx = (x0 + bw / 2) / W
             cy = (y0 + bh / 2) / H
-            lines.append(f"{COCO_TO_YOLO[cid]} {cx:.6f} {cy:.6f} {bw / W:.6f} {bh / H:.6f}")
+            lines.append(f"{coco_to_yolo[cid]} {cx:.6f} {cy:.6f} {bw / W:.6f} {bh / H:.6f}")
 
         (lbl_dir / f"{stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
         stats["written"] += 1
@@ -155,32 +177,43 @@ def convert_split(split: str, flir_root: Path, out: Path, *, copy: bool) -> dict
     return stats
 
 
-def write_data_yaml(config: Path, out: Path) -> None:
+def write_data_yaml(config: Path, out: Path, classes: list[str], splits: list[str]) -> None:
     config.parent.mkdir(parents=True, exist_ok=True)
-    names = "\n".join(f"  {i}: {n}" for i, n in enumerate(YOLO_NAMES))
-    config.write_text(
-        "# Ultralytics data config for FLIR ADAS 1.3 (thermal, 8-bit).\n"
-        "# Auto-generated by src/coco_to_yolo.py — re-run it if you move the dataset.\n"
-        f"path: {out.resolve()}\n"
-        "train: images/train\n"
-        "val: images/val\n"
-        f"nc: {len(YOLO_NAMES)}\n"
-        "names:\n"
-        f"{names}\n"
-    )
+    names = "\n".join(f"  {i}: {n}" for i, n in enumerate(classes))
+    lines = [
+        "# Ultralytics data config for FLIR ADAS v2 (thermal).",
+        "# Auto-generated by src/coco_to_yolo.py — re-run it if you move the dataset.",
+        f"path: {out.resolve()}",
+        "train: images/train",
+        "val: images/val",
+    ]
+    if "test" in splits:
+        lines.append("test: images/test")
+    lines += [f"nc: {len(classes)}", "names:", names, ""]
+    config.write_text("\n".join(lines))
 
 
 def main() -> None:
     args = parse_args()
 
+    # Category ids are consistent across splits; read them once from train.
+    with (args.flir_root / SPLIT_DIRS["train"] / "coco.json").open() as f:
+        coco_to_yolo = build_class_map(json.load(f), args.classes)
+    print(f"[classes] {list(enumerate(args.classes))}")
+
+    done_splits = []
     total = {"written": 0, "background": 0, "missing": 0, "dropped_boxes": 0}
-    for split in SPLITS:
-        stats = convert_split(split, args.flir_root, args.out, copy=args.copy)
+    for split, subdir in SPLIT_DIRS.items():
+        split_dir = args.flir_root / subdir
+        if not (split_dir / "coco.json").exists():
+            print(f"[{split:>5}] skipped — no {split_dir / 'coco.json'}")
+            continue
+        stats = convert_split(split, split_dir, args.out, coco_to_yolo, copy=args.copy)
+        done_splits.append(split)
         print(
-            f"[{split:>5}] {stats['written']:>5} images "
+            f"[{split:>5}] {stats['written']:>6} images "
             f"({stats['background']} background), "
-            f"{stats['missing']} referenced-but-missing, "
-            f"{stats['dropped_boxes']} boxes dropped"
+            f"{stats['missing']} missing, {stats['dropped_boxes']} boxes dropped"
         )
         for k in total:
             total[k] += stats[k]
@@ -189,7 +222,7 @@ def main() -> None:
     print(f"  total: {total['written']} images, {total['missing']} missing on disk")
 
     if not args.no_yaml:
-        write_data_yaml(args.config, args.out)
+        write_data_yaml(args.config, args.out, args.classes, done_splits)
         print(f"  config: {args.config} (path -> {args.out.resolve()})")
 
 
