@@ -1,1 +1,17 @@
-Dataset
+# Dataset (large; not versioned)
+Dataset/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+
+# Training artifacts & weights
+runs/
+*.pt
+# ...but keep preserved/released checkpoints
+!models/*.pt
+
+# OS / editor cruft
+.DS_Store
