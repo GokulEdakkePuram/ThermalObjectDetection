@@ -1,10 +1,24 @@
 [project]
 name = "thermalobjectdetection"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fine-tune a YOLO detector for object detection on FLIR ADAS thermal images"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "opencv-python>=4.13.0.92",
+    "pillow>=12.2.0",
     "torch>=2.11.0",
     "torchvision>=0.26.0",
+    "ultralytics>=8.4.40",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.11",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
