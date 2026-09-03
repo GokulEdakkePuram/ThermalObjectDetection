@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
@@ -64,6 +65,13 @@ DEFAULT_CLASSES_V2 = ["person", "bike", "car"]
 
 IMAGE_SUFFIXES = (".jpeg", ".jpg", ".png", ".tiff")
 
+# Finder and Explorer resolve a name collision by appending " 2", " 3" and so
+# on, and a dataset copied between machines a few times collects them. They are
+# duplicates of a frame that is already present, so they must not enter the
+# dataset as extra training examples. FLIR stems are always `FLIR_00001` or
+# `FLIR_video_00001`, so nothing legitimate ends in a space and a number.
+COPY_SUFFIX = re.compile(r" \d+$")
+
 
 @dataclass(frozen=True)
 class Layout:
@@ -92,10 +100,14 @@ def detect_layout(root: Path) -> Layout:
 
 
 def _stems(directory: Path) -> set[str]:
-    """Filename stems of the images in a directory, or empty if there is none."""
+    """Image stems in a directory, minus copy-collision duplicates."""
     if not directory.is_dir():
         return set()
-    return {p.stem for p in directory.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES}
+    return {
+        p.stem
+        for p in directory.iterdir()
+        if p.suffix.lower() in IMAGE_SUFFIXES and not COPY_SUFFIX.search(p.stem)
+    }
 
 
 def coco_labels(annotations: Path, keep: list[str]) -> dict[str, list[str]]:
@@ -161,6 +173,8 @@ def adopted_labels(
 
     out: dict[str, list[str]] = {}
     for path in sorted(directory.glob("*.txt")):
+        if COPY_SUFFIX.search(path.stem):
+            continue
         lines = []
         for line in path.read_text().splitlines():
             parts = line.split()
@@ -180,10 +194,14 @@ def frame_index(
 
     Intersected across *every* image source the release ships, not just the
     one the current arm needs. Doing it per-arm looks equivalent and is not:
-    this download is missing ~15% of the 8-bit JPEGs, and the 16-bit TIFFs are
-    missing 19 frames that the JPEGs have, so the arms came out at 7,562 and
-    7,543 training frames. A 19-frame difference is small but it is exactly
-    the kind of difference that makes a 1% gap in mAP unattributable.
+    this download is missing ~15% of the 8-bit JPEGs, so the arms came out at
+    7,562 and 7,543 training frames. A 19-frame difference is small, but it is
+    exactly the kind that makes a 1% gap in mAP unattributable.
+
+    Those 19 turned out to be Finder ``" 2"`` copies sitting beside the JPEGs
+    and not beside the TIFFs, which is why ``_stems`` now filters them at
+    source. The intersection stays regardless: it is the half that does not
+    depend on having noticed the cause.
     """
     available = {name: _stems(root / sub) for name, sub in layout.image_subdirs.items()}
 

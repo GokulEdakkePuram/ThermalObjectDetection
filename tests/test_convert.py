@@ -154,3 +154,33 @@ class TestDetectLayout:
     def test_an_unrecognised_tree_fails_loudly(self, tmp_path):
         with pytest.raises(SystemExit, match="neither"):
             detect_layout(tmp_path)
+
+
+class TestCopyCollisionDuplicates:
+    """A dataset copied between machines collects "FLIR_00009 2.jpeg" files.
+
+    They are duplicates of a frame already in the set. Left in, they enter
+    training twice -- and because they only survive in whichever directories
+    the copy touched, they land in some arms and not others.
+    """
+
+    def test_duplicate_images_are_not_counted_as_frames(self, tmp_path):
+        _touch(tmp_path / "thermal_8_bit", ["a.jpeg", "a 2.jpeg"])
+        _touch(tmp_path / "thermal_16_bit", ["a.tiff", "a 2.tiff"])
+
+        stems, _ = frame_index(tmp_path, LAYOUT, {"a": [], "a 2": []})
+        assert stems == ["a"]
+
+    def test_duplicate_labels_are_skipped_when_adopting(self, tmp_path):
+        (tmp_path / "FLIR_1.txt").write_text("0 0.5 0.5 0.1 0.1\n")
+        (tmp_path / "FLIR_1 2.txt").write_text("0 0.5 0.5 0.1 0.1\n")
+
+        assert sorted(adopted_labels(tmp_path, ["person"], ["person"])) == ["FLIR_1"]
+
+    def test_a_real_stem_ending_in_a_digit_is_untouched(self, tmp_path):
+        """FLIR_00009 must survive; only "FLIR_00009 2" is a copy."""
+        _touch(tmp_path / "thermal_8_bit", ["FLIR_00009.jpeg"])
+        _touch(tmp_path / "thermal_16_bit", ["FLIR_00009.tiff"])
+
+        stems, _ = frame_index(tmp_path, LAYOUT, {"FLIR_00009": []})
+        assert stems == ["FLIR_00009"]
