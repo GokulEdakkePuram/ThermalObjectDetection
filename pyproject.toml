@@ -1,24 +1,46 @@
 [project]
-name = "thermalobjectdetection"
+name = "thermaldet"
 version = "0.1.0"
-description = "Fine-tune a YOLO detector for object detection on FLIR ADAS thermal images"
+description = "Fine-tuning YOLO for object detection in thermal infrared imagery (FLIR ADAS)"
 readme = "README.md"
 requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "Gokul Edakke Puram" }]
+keywords = ["object-detection", "yolo", "thermal", "infrared", "flir", "computer-vision"]
+
 dependencies = [
-    "opencv-python>=4.13.0.92",
-    "pillow>=12.2.0",
+    "pyyaml>=6.0.3",
     "torch>=2.11.0",
     "torchvision>=0.26.0",
     "ultralytics>=8.4.40",
+    "numpy>=2.0",
+    "opencv-python>=4.13.0.92",
+    "pillow>=12.2.0",
+    "psutil>=7.0",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
+    "pytest>=8.0",
     "ruff>=0.15.11",
 ]
+wandb = ["wandb>=0.18"]
+mlflow = ["mlflow>=2.16"]
+
+[project.scripts]
+thermaldet = "thermaldet.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.26,<0.12.0"]
+build-backend = "uv_build"
 
 [tool.ruff]
-line-length = 120
+line-length = 100
+target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
