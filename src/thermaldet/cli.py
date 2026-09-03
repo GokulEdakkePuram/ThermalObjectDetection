@@ -124,6 +124,13 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_stem_check(args: argparse.Namespace) -> int:
+    from .stem import analyse
+
+    print(analyse(args.weights, threshold=args.threshold).summary())
+    return 0
+
+
 def _cmd_train_manual(args: argparse.Namespace) -> int:
     from .manual import main as manual_main
 
@@ -172,6 +179,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="experiment tracker (default: whatever the config says)",
     )
     p.set_defaults(func=_cmd_train)
+
+    p = sub.add_parser(
+        "stem-check",
+        help="how much of an RGB-pretrained first layer survives greyscale input",
+    )
+    p.add_argument("weights", nargs="?", default="yolo11s.pt")
+    p.add_argument("--threshold", type=float, default=0.1)
+    p.set_defaults(func=_cmd_stem_check)
 
     p = sub.add_parser(
         "train-manual",
