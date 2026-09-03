@@ -1,0 +1,8 @@
+# 48 GB+ cards: A6000, L40S, A100. Rarely worth the price at this frame size --
+# the bottleneck here is the dataloader, not the card (see docs/05).
+batch: 48
+workers: 12
+device: "0"
+train_args:
+  amp: true
+  cache: ram

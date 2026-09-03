@@ -1,0 +1,8 @@
+# Present so the pipeline is runnable anywhere, including CI. Not a serious
+# training target -- a full epoch takes hours.
+batch: 2
+workers: 4
+device: cpu
+train_args:
+  amp: false
+  cache: false

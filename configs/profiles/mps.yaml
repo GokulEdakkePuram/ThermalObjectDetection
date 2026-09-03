@@ -1,0 +1,12 @@
+# Apple Silicon. The GPU shares system RAM, so a 16 GB machine has perhaps
+# 8-10 GB usable before the OS starts swapping.
+batch: 8
+workers: 6
+device: mps
+train_args:
+  # AMP is a no-op on MPS in this torch version, and enabling it only adds a
+  # startup check that can fail.
+  amp: false
+  # Caching 10k frames in unified memory competes with the model for the same
+  # pool, which is how an MPS run turns into a swap storm.
+  cache: false

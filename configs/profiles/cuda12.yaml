@@ -1,0 +1,7 @@
+# 12-16 GB cards: RTX 3060, 4070, T4. The cheap rental tier.
+batch: 16
+workers: 8
+device: "0"
+train_args:
+  amp: true
+  cache: ram

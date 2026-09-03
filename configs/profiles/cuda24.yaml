@@ -1,0 +1,16 @@
+# 24 GB cards: RTX 3090, 4090, A5000. The common rental tier, and the one the
+# published numbers were produced on.
+#
+# 640x512 frames are small, so batch can be far larger than an aerial pipeline
+# would allow. 32 is chosen to hold for yolo11m as well as yolo11s, so the one
+# value covers every arm of every ablation here. Confirm with
+# `thermaldet probe` before committing to a long run.
+batch: 32
+workers: 8
+device: "0"
+train_args:
+  amp: true
+  # The whole dataset is ~10k 640x512 greyscale frames. Cached in RAM it is a
+  # few GB, and it removes JPEG decode from the training loop -- which matters
+  # because at this frame size the pipeline is dataloader-bound, not GPU-bound.
+  cache: ram
