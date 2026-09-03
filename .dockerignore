@@ -1,0 +1,15 @@
+# Never send these to the build context -- Dataset/ alone is ~18 GB.
+Dataset/
+data/
+runs/
+weights/
+reports/
+logs/
+models/
+.venv/
+.git/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pt
+*.onnx
