@@ -98,9 +98,7 @@ def _stems(directory: Path) -> set[str]:
     return {p.stem for p in directory.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES}
 
 
-def coco_labels(
-    annotations: Path, label_classes: list[str], keep: list[str]
-) -> dict[str, list[str]]:
+def coco_labels(annotations: Path, keep: list[str]) -> dict[str, list[str]]:
     """Read a COCO JSON into ``{stem: [yolo lines]}``.
 
     Categories are matched by *name*, not id: 1.3 uses COCO's original ids
@@ -257,7 +255,7 @@ def load_labels(
 
     annotations = root / subdir / filename
     if annotations.exists():
-        return coco_labels(annotations, label_classes, keep)
+        return coco_labels(annotations, keep)
 
     if adopt_from is not None:
         directory = adopt_from / split
