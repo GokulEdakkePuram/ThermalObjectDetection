@@ -1,0 +1,40 @@
+# Shared defaults. Every experiment inherits from here via `extends: base`, so
+# an ablation config only states the lines that actually differ.
+model: yolo11s.pt
+data: configs/data/flir_agc.yaml
+device: auto
+seed: 0
+workers: 8
+patience: 20
+
+# FLIR frames are 640x512, so imgsz 640 is the native resolution rather than a
+# choice. Unlike aerial imagery there is no downscaling to argue about here --
+# which is precisely why this repo's experiments are about what the sensor
+# hands the network, not about how much of the frame survives the resize.
+imgsz: 640
+epochs: 60
+
+train_args:
+  optimizer: auto
+  cos_lr: true
+  # Mosaic pays off here for the usual reason (more objects per step) and one
+  # thermal-specific one: it composites four frames with different absolute
+  # temperatures into one canvas, which stops the model keying on a frame-wide
+  # brightness offset. Closing it for the last epochs removes the domain gap
+  # between augmented training images and clean validation images.
+  mosaic: 1.0
+  close_mosaic: 10
+  # A dashcam has a canonical "up" and a mirror-symmetric world, so horizontal
+  # flips are free and vertical flips would invent scenes that never occur.
+  fliplr: 0.5
+  flipud: 0.0
+  # Colour jitter is meaningless on a single-channel sensor replicated to three
+  # channels: HSV augmentation would only shift a grey axis. Turned off rather
+  # than left at the Ultralytics defaults, where it silently does nothing
+  # useful and costs dataloader time.
+  hsv_h: 0.0
+  hsv_s: 0.0
+  hsv_v: 0.4
+  degrees: 0.0
+  scale: 0.5
+  plots: true

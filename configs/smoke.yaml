@@ -1,0 +1,11 @@
+# A one-epoch run used to prove the pipeline end-to-end before committing any
+# real compute to it.
+extends: base
+name: smoke
+model: yolo11n.pt
+batch: 4
+epochs: 1
+patience: 0
+train_args:
+  fraction: 0.02
+  plots: false
