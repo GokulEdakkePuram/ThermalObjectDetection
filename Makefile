@@ -16,7 +16,7 @@ setup:  ## install dependencies into .venv
 convert:  ## build the AGC arm from the FLIR download
 	uv run thermaldet convert --arm agc --flir-root $(FLIR) $(ADOPT)
 
-arms:  ## build all three preprocessing arms (~2 min, ~6 GB)
+arms:  ## build all three preprocessing arms (~1 min, ~3.5 GB)
 	uv run thermaldet convert --arm agc    --flir-root $(FLIR) $(ADOPT)
 	uv run thermaldet convert --arm global --flir-root $(FLIR) $(ADOPT)
 	uv run thermaldet convert --arm p1p99  --flir-root $(FLIR) $(ADOPT)

@@ -92,9 +92,9 @@ model size, the pipeline is input-bound.
   need a host driver new enough for it. An old driver fails only once torch is
   imported — five paid minutes and 5 GB after `uv sync` started.
   `setup_remote.sh` checks the driver first, before installing anything.
-- **Disk.** The FLIR download is ~18 GB, the three preprocessing arms add ~6
-  GB, and the CUDA venv is ~8 GB. Rentals commonly default to 10 GB total,
-  which is the single most common way an instance gets wasted.
+- **Disk.** The FLIR download is ~18 GB, the three preprocessing arms add
+  ~3.5 GB, and the CUDA venv is ~8 GB. Rentals commonly default to 10 GB
+  total, which is the single most common way an instance gets wasted.
 - **The dataset cannot be scripted.** FLIR is behind a registration form, so
   it has to be moved onto the box by hand (`scp`, or an rclone remote). Plan
   for that; on a slow uplink it is the longest step in the whole process.
