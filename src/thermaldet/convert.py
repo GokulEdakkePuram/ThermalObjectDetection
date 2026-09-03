@@ -32,7 +32,7 @@ import json
 import os
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .paths import CONFIG_DIR, DATA_DIR
@@ -398,6 +398,14 @@ def convert(
                 "flir_version": layout.version,
                 "source": str(root),
                 "classes": classes,
+                # How the pixels were produced. Inference has to reproduce it:
+                # a model trained on a global window and fed AGC JPEGs sees a
+                # different image of the same scene, and fails quietly.
+                "mapping": (
+                    {"kind": "agc"}
+                    if render is None
+                    else {"kind": type(render).__name__, **asdict(render)}
+                ),
                 "splits": summary,
             },
             indent=2,
