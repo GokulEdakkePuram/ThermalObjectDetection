@@ -124,6 +124,12 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_train_manual(args: argparse.Namespace) -> int:
+    from .manual import main as manual_main
+
+    return manual_main(args.args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="thermaldet", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -166,6 +172,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="experiment tracker (default: whatever the config says)",
     )
     p.set_defaults(func=_cmd_train)
+
+    p = sub.add_parser(
+        "train-manual",
+        help="train through the explicit loop (per-depth learning rates)",
+        description="Everything after the verb is passed through; see "
+        "`thermaldet train-manual --help`.",
+    )
+    p.add_argument("args", nargs=argparse.REMAINDER)
+    p.set_defaults(func=_cmd_train_manual)
 
     p = sub.add_parser("probe", help="time a short run and project the full one")
     p.add_argument("configs", nargs="+")

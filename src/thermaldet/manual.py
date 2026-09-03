@@ -1,21 +1,28 @@
-"""
-Manual fine-tuning loop for Ultralytics YOLO (v8/v11 DetectionModel) — ADVANCED.
+"""An explicit training loop, for the experiments the stock Trainer cannot run.
 
-This is an alternative to the standard `src/train.py`. It replaces the stock
-Trainer with an explicit loop so custom logic (per-group LRs, discriminative
-fine-tuning, extra logging) can be injected. Prefer `src/train.py` unless you
-need that control — note `validate()` here reports mean val loss, not mAP
-(swap in DetectionValidator for real mAP).
+`thermaldet train` is the right tool for everything in the README. This is
+here for the one question the transfer ablation raises and cannot answer:
+*if* freezing the stem turns out to cost more on thermal than it does on RGB,
+that says the early filters have to be relearned -- and a layer that has to be
+relearned wants a **higher** learning rate than one that only needs adjusting,
+not the lower one discriminative fine-tuning conventionally gives it.
 
-Run `python src/coco_to_yolo.py` first to build the dataset + data yaml.
+Ultralytics' Trainer builds one set of parameter groups and offers no hook to
+scale learning rate by depth, so testing that means owning the loop. What is
+here is deliberately the same shape as the stock trainer -- warmup, cosine
+schedule, EMA, AMP, gradient accumulation -- so that `--backbone-lr-mult 1.0`
+reproduces it and any difference is attributable to the multiplier.
+
+One caveat, stated because it is easy to miss: `validate()` reports mean
+validation loss, not mAP. Use `thermaldet eval` on the checkpoint for a real
+number.
 
 Usage:
-    python src/train_manual.py \\
-        --weights yolov8n.pt \\
-        --data configs/flir_thermal.yaml \\
-        --epochs 50 --imgsz 640 --batch 16 \\
-        --freeze 10 --optimizer AdamW --lr0 1e-3 --ema \\
-        --device mps        # or cuda, or cpu
+    thermaldet train-manual \\
+        --weights yolo11s.pt --data configs/data/flir_agc.yaml \\
+        --epochs 60 --imgsz 640 --batch 16 \\
+        --optimizer AdamW --lr0 1e-3 --ema \\
+        --backbone-lr-mult 5.0
 """
 
 from __future__ import annotations
@@ -39,15 +46,19 @@ from ultralytics.nn.tasks import DetectionModel
 from ultralytics.utils import LOGGER
 from ultralytics.utils.torch_utils import ModelEMA
 
+from .config import resolve_device
+
 
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     # data / model
-    p.add_argument("--weights", type=str, default="yolov8n.pt")
-    p.add_argument("--data", type=str, default="configs/flir_thermal.yaml", help="path to data.yaml")
+    p.add_argument("--weights", type=str, default="yolo11s.pt")
+    p.add_argument(
+        "--data", type=str, default="configs/data/flir_agc.yaml", help="path to data.yaml"
+    )
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--workers", type=int, default=8)
@@ -64,7 +75,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--warmup-bias-lr", type=float, default=0.1)
 
     # regularization / stability
-    p.add_argument("--freeze", type=int, default=0, help="freeze first N top-level layers (backbone is 0..9 on v8)")
+    p.add_argument(
+        "--freeze",
+        type=int,
+        default=0,
+        help="freeze the first N top-level layers (YOLO11's backbone is 0-10, so 11)",
+    )
     p.add_argument("--accumulate", type=int, default=1, help="gradient accumulation steps")
     p.add_argument("--grad-clip", type=float, default=10.0, help="max grad norm (0 disables)")
     p.add_argument("--amp", action="store_true", help="mixed precision (CUDA or MPS; no-op on CPU)")
@@ -76,17 +92,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dfl", type=float, default=1.5)
 
     # io
-    p.add_argument(
-        "--device",
-        type=str,
-        default="cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"),
-    )
+    p.add_argument("--device", type=str, default=resolve_device())
     p.add_argument("--project", type=str, default="runs/manual")
+    p.add_argument(
+        "--backbone-lr-mult",
+        type=float,
+        default=1.0,
+        help="scale the backbone's LR relative to the head; >1 if the stem has "
+        "to be relearned rather than adjusted",
+    )
+    p.add_argument(
+        "--backbone-layers",
+        type=int,
+        default=11,
+        help="how many top-level layers count as backbone (YOLO11: 0-10)",
+    )
     p.add_argument("--name", type=str, default="exp")
     p.add_argument("--resume", type=str, default=None, help="path to checkpoint")
     p.add_argument("--save-period", type=int, default=-1)
     p.add_argument("--seed", type=int, default=0)
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 # --------------------------------------------------------------------------- #
@@ -112,46 +137,86 @@ def freeze_layers(model: nn.Module, freeze_n: int) -> None:
     LOGGER.info(f"Froze {frozen} parameter tensors in first {freeze_n} layers")
 
 
-def build_param_groups(model: nn.Module, weight_decay: float) -> list[dict]:
-    """Three groups: conv/linear weights (wd), biases (no wd), norm weights (no wd).
+def layer_index(name: str) -> int | None:
+    """Top-level layer index from a parameter name like ``model.7.conv.weight``."""
+    parts = name.split(".")
+    if len(parts) >= 2 and parts[1].isdigit():
+        return int(parts[1])
+    return None
 
-    Enumerates from named_parameters() to guarantee full coverage; membership
-    in the 'norm' group is decided by pointer identity against each norm
-    module's direct parameters.
+
+def build_param_groups(
+    model: nn.Module,
+    weight_decay: float,
+    backbone_layers: int = 0,
+    backbone_lr_mult: float = 1.0,
+) -> list[dict]:
+    """Parameter groups split by decay class, and optionally by depth.
+
+    Decay class first: convolution weights get weight decay, biases and norm
+    parameters do not. Enumerating from ``named_parameters()`` guarantees full
+    coverage, and membership of the norm group is decided by pointer identity
+    against each norm module's own parameters rather than by name -- names
+    vary between architectures, pointers do not.
+
+    Depth second, and only when ``backbone_lr_mult`` is not 1.0, so the default
+    reproduces the stock three-group layout exactly. ``lr_mult`` rides along in
+    the group dict; ``torch.optim`` keeps unknown keys, and the schedule reads
+    them back when it computes each group's base LR.
     """
-    g_weights, g_biases, g_norm = [], [], []
     norm_types = (nn.BatchNorm2d, nn.LayerNorm, nn.GroupNorm, nn.InstanceNorm2d)
-
     norm_ids = set()
-    for m in model.modules():
-        if isinstance(m, norm_types):
-            norm_ids.update(id(p) for p in m.parameters(recurse=False))
+    for module in model.modules():
+        if isinstance(module, norm_types):
+            norm_ids.update(id(p) for p in module.parameters(recurse=False))
 
-    for name, p in model.named_parameters():
-        if not p.requires_grad:
+    split_depth = backbone_lr_mult != 1.0
+    buckets: dict[tuple[bool, str], list[nn.Parameter]] = {}
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
             continue
-        if id(p) in norm_ids:
-            g_norm.append(p)
+        if id(param) in norm_ids:
+            kind = "norm"
         elif name.endswith(".bias"):
-            g_biases.append(p)
+            kind = "bias"
         else:
-            g_weights.append(p)
+            kind = "weight"
 
-    LOGGER.info(f"Param groups: weights={len(g_weights)}, biases={len(g_biases)}, norm={len(g_norm)}")
-    if not (g_weights or g_biases or g_norm):
-        raise RuntimeError("No trainable parameters — check --freeze value")
-    return [
-        {"params": g_weights, "weight_decay": weight_decay},
-        {"params": g_biases, "weight_decay": 0.0},
-        {"params": g_norm, "weight_decay": 0.0},
+        index = layer_index(name)
+        in_backbone = split_depth and index is not None and index < backbone_layers
+        buckets.setdefault((in_backbone, kind), []).append(param)
+
+    if not buckets:
+        raise RuntimeError("No trainable parameters -- check --freeze value")
+
+    groups = [
+        {
+            "params": params,
+            "weight_decay": weight_decay if kind == "weight" else 0.0,
+            "lr_mult": backbone_lr_mult if in_backbone else 1.0,
+            "is_bias": kind == "bias",
+        }
+        for (in_backbone, kind), params in sorted(buckets.items())
     ]
+    LOGGER.info(
+        "Param groups: "
+        + ", ".join(
+            f"{'backbone' if in_backbone else 'head'}/{kind}={len(params)}"
+            for (in_backbone, kind), params in sorted(buckets.items())
+        )
+    )
+    return groups
 
 
-def build_optimizer(name: str, groups: list[dict], lr: float, momentum: float) -> torch.optim.Optimizer:
+def build_optimizer(
+    name: str, groups: list[dict], lr: float, momentum: float
+) -> torch.optim.Optimizer:
+    """Build the optimizer with each group's LR already scaled by its multiplier."""
+    scaled = [{**g, "lr": lr * g.get("lr_mult", 1.0)} for g in groups]
     if name == "AdamW":
-        return AdamW(groups, lr=lr, betas=(momentum, 0.999))
+        return AdamW(scaled, lr=lr, betas=(momentum, 0.999))
     if name == "SGD":
-        return SGD(groups, lr=lr, momentum=momentum, nesterov=True)
+        return SGD(scaled, lr=lr, momentum=momentum, nesterov=True)
     raise ValueError(name)
 
 
@@ -173,7 +238,10 @@ def warmup_step(
 ) -> None:
     xi = [0, nw]
     for j, pg in enumerate(optimizer.param_groups):
-        start_lr = warmup_bias_lr if j == 1 else 0.0
+        # Biases start warmup high and come down; everything else starts at
+        # zero. Identified by flag rather than by position -- indexing group 1
+        # only held while there were exactly three groups.
+        start_lr = warmup_bias_lr if pg.get("is_bias") else 0.0
         pg["lr"] = _interp(ni, xi, [start_lr, base_lrs[j] * lr_lambda(epoch)])
         if "momentum" in pg:
             pg["momentum"] = _interp(ni, xi, [warmup_momentum, momentum])
@@ -300,8 +368,8 @@ def validate(model, loader, device, args) -> float:
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     set_seed(args.seed)
     device = torch.device(args.device)
     save_dir = Path(args.project) / args.name
@@ -351,7 +419,9 @@ def main() -> None:
     LOGGER.info(f"Train batches/epoch={nb}, warmup iters={nw}")
 
     # --- Optimizer + scheduler ---
-    groups = build_param_groups(model, args.weight_decay)
+    groups = build_param_groups(
+        model, args.weight_decay, args.backbone_layers, args.backbone_lr_mult
+    )
     optimizer = build_optimizer(args.optimizer, groups, args.lr0, args.momentum)
     base_lrs = [pg["lr"] for pg in optimizer.param_groups]
     lr_lambda = cosine_lr_lambda(args.lrf, args.epochs)
@@ -400,7 +470,9 @@ def main() -> None:
 
         val_model = ema.ema if ema is not None else model
         val_loss = validate(val_model, val_loader, device, args)
-        LOGGER.info(f"[Epoch {epoch + 1}] train box/cls/dfl={mloss.tolist()}  val_loss={val_loss:.4f}")
+        LOGGER.info(
+            f"[Epoch {epoch + 1}] train box/cls/dfl={mloss.tolist()}  val_loss={val_loss:.4f}"
+        )
 
         ckpt = {
             "epoch": epoch,
@@ -425,6 +497,7 @@ def main() -> None:
             torch.save(ckpt, save_dir / f"epoch{epoch + 1}.pt")
 
     LOGGER.info(f"Done. best val_loss={best_val:.4f}")
+    return 0
 
 
 if __name__ == "__main__":
