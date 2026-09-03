@@ -148,15 +148,20 @@ def frame_spans(raw_dir: Path, sample: int = SAMPLE_FRAMES, seed: int = 0) -> di
         los.append(lo)
         his.append(hi)
 
-    global_lo, global_hi = float(np.min(los)), float(np.max(his))
     median_span = float(np.median(spans))
+    window_lo, window_hi = measure_window(raw_dir, sample=sample, seed=seed)
+    window_span = window_hi - window_lo
+
     return {
         "frames_sampled": len(chosen),
         "median_frame_span": median_span,
-        "dataset_span": global_hi - global_lo,
-        "global_lo": global_lo,
-        "global_hi": global_hi,
-        # What a fixed window costs: the output levels a median frame gets to
-        # use once the window has to cover every frame in the dataset.
-        "levels_under_global_map": 255.0 * median_span / max(global_hi - global_lo, 1.0),
+        # The naive window -- every frame covered, nothing clipped. Reported
+        # because it is what "one fixed map" sounds like it should mean.
+        "dataset_span": float(np.max(his) - np.min(los)),
+        "window_lo": window_lo,
+        "window_hi": window_hi,
+        "window_span": window_span,
+        # What the global arm actually costs: the output levels a median frame
+        # gets to use, measured against the window that arm really applies.
+        "levels_under_global_map": 255.0 * median_span / max(window_span, 1.0),
     }
