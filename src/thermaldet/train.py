@@ -11,9 +11,14 @@ from typing import Any
 from .config import ExperimentConfig, load_config
 from .hardware import detect
 from .paths import RUNS_DIR, configure_ultralytics
+from .tracking import configure as configure_tracking
 
 
-def train(config: str | ExperimentConfig, profile: str | None = None) -> dict[str, Any]:
+def train(
+    config: str | ExperimentConfig,
+    profile: str | None = None,
+    tracker: str | None = None,
+) -> dict[str, Any]:
     """Fine-tune a YOLO model according to an experiment config.
 
     ``profile`` overlays a hardware profile (or ``"auto"`` to detect one), so
@@ -26,10 +31,14 @@ def train(config: str | ExperimentConfig, profile: str | None = None) -> dict[st
 
     configure_ultralytics()
     cfg = load_config(config, profile=profile) if isinstance(config, str) else config
+    if tracker is not None:
+        cfg.tracker = tracker
 
     hw = detect()
+    active = configure_tracking(cfg.tracker, run_name=cfg.name)
     print(f"[thermaldet] hardware: {hw.describe()}")
     print(f"[thermaldet] profile : {cfg.profile or '(none, using config defaults)'}")
+    print(f"[thermaldet] tracking: {active}")
 
     model = YOLO(cfg.model)
     if cfg.pretrained:
