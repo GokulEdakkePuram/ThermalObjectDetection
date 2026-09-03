@@ -1,4 +1,4 @@
-.PHONY: help setup convert arms profile smoke pretrained scratch frozen radiometry eval test lint clean
+.PHONY: help setup convert arms profile smoke pretrained scratch frozen-stem frozen-backbone transfer radiometry eval test lint clean
 
 FLIR ?= Dataset/FLIR_ADAS_1_3
 # Set when the download's annotation JSONs are missing and YOLO labels for it
@@ -33,8 +33,13 @@ pretrained:  ## the control: COCO-pretrained, fully fine-tuned
 scratch:  ## same architecture, random init
 	uv run thermaldet train scratch
 
-frozen:  ## COCO-pretrained with the backbone frozen
+frozen-stem:  ## COCO-pretrained with layers 0-1 frozen
+	uv run thermaldet train frozen_stem
+
+frozen-backbone:  ## COCO-pretrained with the whole backbone frozen
 	uv run thermaldet train frozen_backbone
+
+transfer: pretrained scratch frozen-stem frozen-backbone  ## the whole transfer axis
 
 radiometry:  ## the two 16-bit arms, against the AGC control
 	uv run thermaldet train global_map
