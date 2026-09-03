@@ -1,0 +1,14 @@
+# Radiometry arm 2: per-frame 1st-99th percentile stretch.
+#
+# AGC re-implemented in eight lines. Sits between the other two arms: it is
+# per-frame like FLIR's own gain control, but it is a plain linear stretch
+# with published parameters rather than a proprietary curve.
+#
+# Its job is to separate "per-frame normalisation helps" from "FLIR's
+# particular normalisation helps". If this lands on top of the AGC control,
+# the answer is the former and the sensor's absolute readings are not
+# carrying detectable signal.
+extends: base
+name: p1p99_map
+data: configs/data/flir_p1p99.yaml
+notes: "Radiometry ablation: per-frame stretch. Only `data` differs from pretrained."

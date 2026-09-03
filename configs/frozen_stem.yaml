@@ -1,0 +1,15 @@
+# Transfer arm 2: COCO weights, first two layers frozen.
+#
+# Layers 0 and 1 are the two stride-2 convolutions that turn pixels into
+# features. If thermal breaks transfer, this is where it breaks first: those
+# filters were fitted to RGB edges, colour opponency and daylight texture, and
+# a 14-bit single-channel radiometer offers none of the three.
+#
+# The prediction: freezing two layers out of twenty-three costs far more here
+# than the same freeze costs on an RGB fine-tune. If it costs little, the stem
+# is generic after all and the interesting divergence is deeper.
+extends: base
+name: frozen_stem
+train_args:
+  freeze: 2
+notes: "Transfer ablation: stem frozen. Only `freeze` differs from pretrained."

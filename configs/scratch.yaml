@@ -1,0 +1,13 @@
+# Transfer arm 1: the same architecture, randomly initialised.
+#
+# `.yaml` instead of `.pt` is the entire difference -- Ultralytics builds from
+# the architecture spec and initialises randomly. Everything else, including
+# the schedule, is inherited unchanged.
+#
+# This measures what COCO pretraining is worth on a sensor COCO never saw. The
+# usual RGB answer is "a great deal"; whether that survives a modality change
+# is the question.
+extends: base
+name: scratch
+model: yolo11s.yaml
+notes: "Transfer ablation: random init. Only `model` differs from pretrained."

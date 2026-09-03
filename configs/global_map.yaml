@@ -1,0 +1,9 @@
+# Radiometry arm 1: one fixed 16-bit -> 8-bit window for the whole dataset.
+#
+# Absolute counts survive, so the same temperature is the same grey level in
+# every frame. It is paid for in contrast: a median frame gets ~106 of the 255
+# output levels (see `thermaldet profile`).
+extends: base
+name: global_map
+data: configs/data/flir_global.yaml
+notes: "Radiometry ablation: global window. Only `data` differs from pretrained."

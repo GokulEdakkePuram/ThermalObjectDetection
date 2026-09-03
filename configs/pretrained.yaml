@@ -1,0 +1,10 @@
+# The control, and the run both ablations are measured against.
+#
+# COCO-pretrained YOLO11s, every layer trainable, on FLIR's shipped 8-bit
+# frames. This is what "fine-tune YOLO on FLIR" means everywhere it is
+# written down, which is exactly why it is the baseline rather than the
+# result.
+extends: base
+name: pretrained
+model: yolo11s.pt
+notes: "Control for both axes: COCO init, full fine-tune, AGC 8-bit input."

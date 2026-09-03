@@ -1,0 +1,15 @@
+# Transfer arm 3: COCO weights, the whole backbone frozen, head only.
+#
+# YOLO11's backbone is layers 0-10 inclusive, so `freeze: 11` is the whole of
+# it -- not 10. (YOLOv8's backbone was 0-9, which is where the widespread
+# `freeze: 10` comes from; carried over to YOLO11 it leaves layer 10 training
+# and quietly measures something else.)
+#
+# Standard practice for a small fine-tuning set on in-domain RGB, where it
+# costs a point or two of mAP and a lot of compute. Here it is the strongest
+# form of the claim that COCO features transfer.
+extends: base
+name: frozen_backbone
+train_args:
+  freeze: 11
+notes: "Transfer ablation: backbone frozen. Only `freeze` differs from pretrained."
