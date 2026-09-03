@@ -1,83 +1,68 @@
-"""Fine-tune a YOLO detector on the FLIR ADAS thermal dataset (standard path).
-
-Thin wrapper over Ultralytics' `YOLO.train`, which is the recommended way to
-fine-tune. Loading `yolov8n.pt` and pointing `--data` at a 4-class data yaml makes
-Ultralytics automatically re-head the model to `nc=4` and report real mAP each
-epoch. Results land under `runs/detect/<name>/` with `weights/best.pt`.
-
-Run `python src/coco_to_yolo.py` first to build the dataset + data yaml.
-
-Examples
---------
-    # Full fine-tune (default)
-    python src/train.py --epochs 100 --imgsz 640 --batch 16
-
-    # Freeze the backbone (layers 0-9 on YOLOv8), train the head only
-    python src/train.py --freeze 10
-
-    # Quick CPU smoke test
-    python src/train.py --epochs 1 --imgsz 320 --batch 4 --device cpu
-"""
+"""Training entry point."""
 
 from __future__ import annotations
 
-import argparse
+import json
+import time
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
 
-from ultralytics import YOLO
-
-
-def default_device() -> str:
-    import torch
-
-    if torch.cuda.is_available():
-        return "0"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+from .config import ExperimentConfig, load_config
+from .hardware import detect
+from .paths import RUNS_DIR, configure_ultralytics
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p.add_argument("--weights", default="yolov8n.pt", help="pretrained checkpoint to fine-tune from")
-    p.add_argument("--data", default="configs/flir_thermal.yaml", help="Ultralytics data yaml")
-    p.add_argument("--epochs", type=int, default=100)
-    p.add_argument("--imgsz", type=int, default=640)
-    p.add_argument("--batch", type=int, default=16)
-    p.add_argument("--workers", type=int, default=8)
-    p.add_argument("--freeze", type=int, default=0, help="freeze first N layers (10 = backbone on v8)")
-    p.add_argument("--patience", type=int, default=25, help="early-stopping patience (0 disables)")
-    p.add_argument("--fraction", type=float, default=1.0, help="fraction of the train set to use (for quick runs)")
-    p.add_argument("--device", default=default_device(), help="cuda index, 'mps', or 'cpu'")
-    p.add_argument("--project", default=None, help="output dir (default: runs/detect)")
-    p.add_argument("--name", default="flir_thermal")
-    p.add_argument("--resume", action="store_true", help="resume the last run of --name")
-    p.add_argument("--seed", type=int, default=0)
-    return p.parse_args()
+def train(config: str | ExperimentConfig, profile: str | None = None) -> dict[str, Any]:
+    """Fine-tune a YOLO model according to an experiment config.
 
+    ``profile`` overlays a hardware profile (or ``"auto"`` to detect one), so
+    the same experiment runs unchanged on a laptop or a rented GPU. The
+    resolved config is written next to the run's weights, so a result in
+    ``runs/`` can always be traced back to the exact settings that produced it
+    -- including which machine profile it ran under.
+    """
+    from ultralytics import YOLO
 
-def main() -> None:
-    args = parse_args()
-    model = YOLO(args.weights)
-    model.train(
-        data=args.data,
-        epochs=args.epochs,
-        imgsz=args.imgsz,
-        batch=args.batch,
-        workers=args.workers,
-        freeze=args.freeze,
-        patience=args.patience,
-        fraction=args.fraction,
-        device=args.device,
-        project=args.project,
-        name=args.name,
-        resume=args.resume,
-        seed=args.seed,
-        pretrained=True,
-    )
+    configure_ultralytics()
+    cfg = load_config(config, profile=profile) if isinstance(config, str) else config
 
+    hw = detect()
+    print(f"[thermaldet] hardware: {hw.describe()}")
+    print(f"[thermaldet] profile : {cfg.profile or '(none, using config defaults)'}")
 
-if __name__ == "__main__":
-    main()
+    model = YOLO(cfg.model)
+    if cfg.pretrained:
+        # Matching layers transfer by name and shape; the rest stay as built.
+        print(f"[thermaldet] transferring weights from {cfg.pretrained}")
+        model = model.load(cfg.pretrained)
+
+    kwargs = cfg.to_train_kwargs()
+    kwargs.setdefault("project", str(RUNS_DIR / "train"))
+    print(f"[thermaldet] training '{cfg.name}' on {kwargs['device']} ({cfg.model})")
+
+    # Record the resolved config before training rather than after, so that a
+    # failure in any post-training step cannot leave a run whose weights and
+    # metrics are fine but which is unidentifiable.
+    #
+    # It goes to a staging file rather than straight into the run directory:
+    # creating that directory early makes Ultralytics think the name is taken,
+    # so it silently trains into `<name>2` and every downstream path that
+    # expects `<name>` breaks.
+    payload = json.dumps(asdict(cfg), indent=2)
+    staging = RUNS_DIR / ".pending"
+    staging.mkdir(parents=True, exist_ok=True)
+    pending = staging / f"{cfg.name}-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    pending.write_text(payload)
+
+    results = model.train(**kwargs)
+
+    save_dir = Path(results.save_dir)
+    (save_dir / "thermaldet_config.json").write_text(payload)
+    pending.unlink(missing_ok=True)  # landed safely; no need for the copy
+
+    return {
+        "name": cfg.name,
+        "save_dir": str(save_dir),
+        "best_weights": str(save_dir / "weights" / "best.pt"),
+    }
