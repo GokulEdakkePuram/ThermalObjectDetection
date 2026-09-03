@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -290,13 +291,28 @@ def build_split(
         lines = labels.get(stem, [])
         (label_dir / f"{stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
 
-        if render is None:
+    if render is None:
+        for stem in stems:
             src = next(
                 p for suffix in IMAGE_SUFFIXES if (p := source_dir / f"{stem}{suffix}").exists()
             )
             link_or_copy(src, image_dir / src.name, copy=copy)
-        else:
-            render(source_dir / f"{stem}.tiff", image_dir / f"{stem}.png")
+        return
+
+    # Rendering 10k TIFFs is the one genuinely slow step in the pipeline, and
+    # it is embarrassingly parallel. The mapping objects are frozen dataclasses
+    # precisely so they survive being pickled out to a worker.
+    pending = [
+        (source_dir / f"{stem}.tiff", image_dir / f"{stem}.png")
+        for stem in stems
+        if not (image_dir / f"{stem}.png").exists()
+    ]
+    if not pending:
+        return
+    sources, targets = zip(*pending, strict=True)
+    with ProcessPoolExecutor() as pool:
+        for _ in pool.map(render, sources, targets, chunksize=32):
+            pass
 
 
 def convert(
