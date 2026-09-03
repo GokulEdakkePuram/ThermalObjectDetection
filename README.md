@@ -1,73 +1,232 @@
-# thermaldet — what actually transfers when you fine-tune a detector for thermal
+# thermaldet — fine-tuning YOLO for thermal object detection
 
 Fine-tuning YOLO11 on [FLIR ADAS](https://www.flir.com/oem/adas/adas-dataset-form/)
-thermal infrared, where the input is a 640x512 single-channel radiometer and
-the pretrained weights have only ever seen daylight RGB.
+thermal infrared imagery — 640×512 single-channel frames from a vehicle-mounted
+camera — for three classes: `person`, `bicycle`, `car`.
 
-The interesting part of this problem is not calling `.train()`. It is that two
-things everybody does without thinking — start from COCO weights, and train on
-the 8-bit JPEGs the camera writes — are both *choices*, and both are testable.
-This repo is a controlled attempt to test them, with the reasoning written down
-in [`docs/`](docs/) and the predictions recorded before the runs.
+Most FLIR projects do two things without questioning them: start from
+COCO-pretrained weights, and train on the 8-bit JPEGs the camera writes. Both
+are choices, and both can be tested. This repo tests them, with the reasoning
+in [`docs/`](docs/) and the predictions written down before the runs.
 
-Two claims, one experiment each:
+**Contents**
 
-1. **A third of a COCO-pretrained first layer cannot respond to thermal at
-   all.** Thermal is single-channel, replicated across three to fit an RGB
-   network, so every colour-opponent filter cancels. Measured: 10 of YOLO11s's
-   32 stem filters. If that matters, freezing the backbone — standard
-   fine-tuning advice — should be unusually expensive here.
+- [Quickstart](#quickstart)
+- [Dataset audit](#dataset-audit) — what is actually on disk, and what is missing
+- [What the pipeline builds](#what-the-pipeline-builds)
+- [The two experiments](#the-two-experiments)
+- [Results](#results)
+- [Command reference](#command-reference)
+- [Repository layout](#repository-layout)
+- [Design decisions](#design-decisions)
 
-2. **The 8-bit thermal frames everyone trains on are not the sensor's
-   output.** They are per-frame automatic gain control, which throws away the
-   absolute measurement that is a thermal camera's entire point. The raw 16-bit
-   is on disk. Whether keeping it is worth the 2.4x of contrast it costs is a
-   measurement, not an opinion.
+---
 
-## Results
+## Quickstart
 
-> **Status:** pipeline complete, tested end to end, and calibrated. The six
-> training runs have not been executed yet — they run on a rented GPU. The
-> tables below are filled in from `reports/results.md` as runs finish, and the
-> commands that produce them are the ones in this README.
->
-> Everything stated as a number *outside* these two tables is already measured
-> and reproducible today.
+Requires [uv](https://docs.astral.sh/uv/) and the FLIR ADAS 1.3 download placed
+at `Dataset/FLIR_ADAS_1_3/`.
 
-All runs: YOLO11s, 60 epochs, 640 px, `batch: 32` on one RTX 4090, evaluated on
-the FLIR validation split.
+```bash
+make setup      # install dependencies into .venv
+make arms       # build all three preprocessing arms (~1 min, ~3.5 GB)
+make profile    # class balance, object scale, dynamic range -> reports/
+make smoke      # 1-epoch run to check the pipeline end to end
+make pretrained # the control run
+make eval       # comparison table -> reports/results.md
+```
 
-**Transfer** (only the named line differs from the control):
+If your download is missing its `thermal_annotations.json` files but has
+converted YOLO labels (see the audit below), point the converter at them:
 
-| run | change | mAP50-95 | mAP50 | vs control | train time |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `pretrained` (control) | — | | | — | |
-| `scratch` | `model: yolo11s.yaml` | | | | |
-| `frozen_stem` | `freeze: 2` | | | | |
-| `frozen_backbone` | `freeze: 11` | | | | |
+```bash
+make arms ADOPT="--adopt-labels Dataset/FLIR_ADAS_1_3/yolo/labels"
+```
 
-**Radiometry** (only the 16-bit → 8-bit mapping differs):
+For training on a rented GPU, see [docs/05](docs/05-running-on-rented-gpus.md).
 
-| run | mapping | mAP50-95 | mAP50 | vs control | train time |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `pretrained` (control) | FLIR AGC, 8-bit | | | — | |
-| `global_map` | fixed window, 16-bit | | | | |
-| `p1p99_map` | per-frame stretch, 16-bit | | | | |
+---
 
-Predictions for both are recorded in [docs/01](docs/01-what-transfers-from-coco.md)
-and [docs/02](docs/02-radiometry-and-agc.md), along with what would falsify
-them. `best.pt` is selected on validation and there is no held-out test split
-in this download — see [docs/03](docs/03-reading-the-metrics.md) before quoting
-any single number from here.
+## Dataset audit
 
-## The first argument, measured without training anything
+FLIR has released this dataset twice and the two are not interchangeable.
 
-A thermal frame has one channel. Ultralytics replicates it to three, so every
-first-layer filter sees the same image three times and its response is governed
-by the sum of its channel slices. An achromatic edge detector reinforces. A
-colour-opponent filter — red-minus-green, the kind that finds a brake light —
-cancels, and outputs approximately zero on every thermal frame it will ever be
-shown.
+| | **ADAS 1.3** (used here) | ADAS v2 |
+| --- | --- | --- |
+| splits | `train/`, `val/`, `video/` | `images_thermal_train/`, `images_thermal_val/`, `video_thermal_test/` |
+| annotations | `<split>/thermal_annotations.json` | `<split>/coco.json` |
+| 8-bit thermal | `thermal_8_bit/*.jpeg` | `data/*.jpg` |
+| **16-bit thermal** | `thermal_16_bit/*.tiff` | **not shipped** |
+| paired RGB | `RGB/*.jpg`, unannotated | annotated |
+| classes | person, bicycle, car, dog | person, bike, car |
+
+Both are COCO underneath, and the converter reads either. **1.3 is used here
+because it ships the raw 16-bit imagery**, which is what the second experiment
+needs. v2 has more frames and no 16-bit, so it supports the first experiment
+only.
+
+Categories are matched by **name**, never by id. 1.3 keeps COCO's original
+numbering (`person=1`, `car=3`, `dog=18`); v2 renumbered and renamed them. A
+hard-coded id map is silently wrong on one of the two.
+
+### What is actually on disk
+
+This is the audit of the specific download this repo was built against. FLIR's
+own ReadMe says the release contains 8,862 train frames (ids 1–8,862), 1,366
+val frames (8,863–10,228) and 4,224 video frames.
+
+**train**
+
+| source | files | unique | `" 2"` duplicates | verdict |
+| --- | ---: | ---: | ---: | --- |
+| YOLO labels | 9,515 | **8,862** | 653 | complete |
+| 16-bit TIFF | 9,263 | **8,862** | 401 | complete |
+| 8-bit JPEG | 7,883 | **7,543** | 340 | **1,319 missing (14.9%)** |
+
+**val**
+
+| source | files | unique | `" 2"` duplicates | verdict |
+| --- | ---: | ---: | ---: | --- |
+| YOLO labels | 1,461 | **1,366** | 95 | complete |
+| 16-bit TIFF | 1,366 | **1,366** | 0 | complete |
+| 8-bit JPEG | 1,091 | **1,091** | 0 | **275 missing (20.1%)** |
+
+### Four findings
+
+**1. There are no annotation JSONs at all.** Zero `.json` files anywhere in the
+download, in any split. The converter's primary path — read COCO, emit YOLO —
+cannot run on this copy.
+
+*Handled by:* `--adopt-labels`, which reads an existing YOLO label directory
+instead. The class order in those files has to be named explicitly, since
+nothing in a `.txt` records it.
+
+**2. There is no test split.** `video/thermal_annotations.json` is one of the
+missing files, so the 4,224 video frames have no labels. Everything in this
+repo is therefore measured on validation, with `best.pt` also *selected* on
+validation. Those numbers are optimistic by an unmeasured amount.
+
+This does not invalidate the *comparisons* — every arm is selected the same
+way — but no single number here should be quoted as this model's accuracy.
+Recovering that one JSON would fix it; the converter already handles the split
+when it is present. See [docs/03](docs/03-reading-the-metrics.md).
+
+**3. The 8-bit JPEGs are incomplete; the 16-bit TIFFs are not.** 1,319 train
+and 275 val frames have a label and a 16-bit TIFF but no 8-bit JPEG. Since the
+experiments compare 8-bit against 16-bit, every arm is built from the
+**intersection** of frames present in every source — otherwise the comparison
+would partly be measuring dataset size.
+
+**4. The copy has Finder duplicates.** 653 train label files, 401 train TIFFs
+and 340 train JPEGs are `"FLIR_01437 2.txt"`-style copy-collision artifacts,
+created when the dataset was moved between machines.
+
+These matter more than they look. A duplicate frame trains twice — and because
+these only survive in whichever directories the copy touched, they enter some
+arms and not others. Nineteen of them sat beside the JPEGs but not the TIFFs,
+which is exactly the 19-frame gap that first showed up between the arms.
+They are now filtered by pattern in
+[`convert.py`](src/thermaldet/convert.py), with
+[tests](tests/test_convert.py) holding it.
+
+### The RGB frames cannot serve as a second modality
+
+Comparing thermal against RGB on the same scenes is the obvious second
+experiment, and it does not work on 1.3. FLIR's ReadMe says why:
+
+> The thermal and RGB camera did not have identical placement on the vehicle
+> and therefore had different viewing geometries, so the thermal annotations do
+> not represent the placement of objects in the RGB image.
+
+The RGB frames are 1800×1600 against the thermal 640×512, from a different
+position, with no annotations of their own. There is no honest way to train an
+RGB detector on them. v2 ships annotated RGB and would support it.
+
+### What survives the audit
+
+| split | frames | boxes | boxes/frame | small % | background frames |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| train | 7,543 | 59,227 | 7.9 | 58.1 | 844 |
+| val | 1,091 | 9,390 | 8.6 | 46.6 | 5 |
+
+"Small" is COCO's convention: box area under 32×32 px. Every number in this
+repo is measured on these frames.
+
+**Class balance and object scale (train)**
+
+| class | boxes | share | median box height |
+| --- | ---: | ---: | ---: |
+| car | 36,209 | 61.1% | 31 px |
+| person | 19,931 | 33.7% | 34 px |
+| bicycle | 3,087 | 5.2% | 35 px |
+
+Two things follow. The imbalance is **12:1** between `car` and `bicycle`, and
+mAP weights classes equally — so every comparison table here prints per-class
+AP50 underneath the mean. And the objects are small but *not* aerial-small in a
+frame that is only 640 px wide to begin with, which is why input resolution is
+not one of the experiments.
+
+**`dog` is excluded by default.** It has 244 training boxes and 16 validation
+boxes. A class whose AP is decided by sixteen boxes would move the headline
+number more than the variable being tested, and would move it differently
+between arms for unrelated reasons. Pass `--classes person bicycle car dog` to
+put it back.
+
+**Reproduce this audit:**
+
+```bash
+uv run thermaldet convert --arm agc --adopt-labels Dataset/FLIR_ADAS_1_3/yolo/labels
+uv run thermaldet profile
+```
+
+The converter prints per-split frame and box counts and how many labelled
+frames had no image; `profile` writes the full table to
+`reports/dataset_profile.md`. Full detail in [docs/00](docs/00-the-dataset.md).
+
+---
+
+## What the pipeline builds
+
+`thermaldet convert` turns the FLIR download into one Ultralytics dataset per
+**preprocessing arm**:
+
+```
+Dataset/FLIR_ADAS_1_3/        the download, read-only
+└── train/, val/, video/
+
+data/                          built by `thermaldet convert`
+├── flir_agc/                  FLIR's shipped 8-bit JPEGs
+├── flir_global/               16-bit -> 8-bit, one fixed window
+└── flir_p1p99/                16-bit -> 8-bit, per-frame stretch
+     ├── images/{train,val}/
+     ├── labels/{train,val}/
+     └── manifest.json         which mapping produced these pixels
+
+configs/data/flir_*.yaml       generated Ultralytics data configs
+```
+
+All three arms are built from the same frame list, so they differ only in
+pixels. `manifest.json` records the mapping and its parameters, which is how
+`thermaldet predict` knows to render a raw TIFF the same way its checkpoint was
+trained.
+
+---
+
+## The two experiments
+
+Six runs, two axes, one shared control. Every arm differs from `pretrained` in
+**exactly one line** of config, and a [test](tests/test_config.py) asserts that.
+
+### 1. What transfers from COCO
+
+A thermal frame is single-channel, replicated to three so it fits an RGB
+network. Every first-layer filter therefore sees the same image three times,
+and its response depends on the sum of its channel slices. An achromatic edge
+detector reinforces. A colour-opponent filter — red-minus-green, the kind that
+finds a brake light — cancels, and outputs approximately zero on every thermal
+frame it will ever see.
+
+That is measurable without training anything:
 
 ```bash
 uv run thermaldet stem-check yolo11s.pt
@@ -79,23 +238,37 @@ stem: 32 filters
   median response ratio: 0.93 (1.0 = channel slices reinforce, 0.0 = they cancel)
 ```
 
-**31% of the first layer is inert before a single gradient step**, and the
-median filter sits at 0.93 — so the stem does not degrade uniformly, it splits
-into a majority that transfers intact and a chromatic third that cannot.
+**31% of the first layer is inert before a single gradient step.** The median
+filter sits at 0.93, so the stem does not degrade evenly — it splits into a
+majority that transfers intact and a chromatic third that cannot.
 
-That establishes those filters are inert. Whether the network *misses* them is
-what `frozen_stem` costs GPU time to find out. Full argument in
+That says those filters are inert. Whether the network *misses* them is what
+the runs cost GPU time to find out:
+
+| run | change from control | question |
+| --- | --- | --- |
+| `pretrained` | — | the control |
+| `scratch` | `model: yolo11s.yaml` | what is COCO pretraining worth at all? |
+| `frozen_stem` | `freeze: 2` | must layers 0–1 be relearned? |
+| `frozen_backbone` | `freeze: 11` | must anything below the head be? |
+
+`freeze: 11` is the whole backbone on YOLO11, whose layers run 0–10. The widely
+copied `freeze: 10` is a YOLOv8 number; on YOLO11 it leaves the last backbone
+block training while the config claims otherwise.
+
+Predictions and falsification criteria:
 [docs/01](docs/01-what-transfers-from-coco.md).
 
-## The second argument, also measured first
+### 2. Whether the 8-bit frames throw away signal
 
-FLIR's 8-bit JPEGs are AGC output: each frame's own range stretched to fill
-0–255. The 1.3 release ships the raw 16-bit TIFFs alongside, so the
-alternative is testable.
+FLIR's 8-bit JPEGs are not the sensor's output. They are the output of
+**automatic gain control**: each frame's own range stretched to fill 0–255.
+That is per-frame and non-stationary, so the same absolute temperature is a
+different pixel value in every frame — which discards the one thing a thermal
+camera uniquely measures.
 
-```bash
-uv run thermaldet profile
-```
+The 16-bit TIFFs are on disk, so the alternative is testable. Measured over 400
+sampled training frames by `thermaldet profile`:
 
 | quantity | counts |
 | --- | ---: |
@@ -104,78 +277,79 @@ uv run thermaldet profile
 | span across frames | 2,987 |
 
 A fixed window has to cover every frame, so a median frame reaches
-`255 × 873 / 2096` = **106 of 255 output levels**. Absolute radiometry costs
-**2.4× of per-frame contrast**. On one real frame:
+`255 × 873 / 2096` = **106 of 255 output levels**. Keeping absolute radiometry
+costs **2.4× of per-frame contrast**. On one real frame:
 
-| arm | std. dev. | p1 | p99 |
-| --- | ---: | ---: | ---: |
-| `agc` (FLIR's JPEG) | 63.7 | 9 | 249 |
-| `global` (fixed window) | 37.2 | 11 | 184 |
-| `p1p99` (per-frame stretch) | 54.4 | 0 | 255 |
+| arm | mapping | std. dev. | p1 | p99 |
+| --- | --- | ---: | ---: | ---: |
+| `pretrained` | FLIR AGC, 8-bit | 63.7 | 9 | 249 |
+| `global_map` | fixed window, 16-bit | 37.2 | 11 | 184 |
+| `p1p99_map` | per-frame stretch, 16-bit | 54.4 | 0 | 255 |
 
-Whether that trade is worth making is the ablation. Details and caveats in
+The third arm is what makes the comparison decidable. Without it, `global`
+losing to `agc` has two explanations — *per-frame normalisation helps*, or
+*FLIR's particular curve helps* — and no way to choose. Details and caveats:
 [docs/02](docs/02-radiometry-and-agc.md).
 
-## The dataset
+---
 
-FLIR ADAS **1.3** (not v2), because 1.3 is the release that ships the 16-bit
-imagery. Three classes: `person`, `bicycle`, `car`.
+## Results
 
-| split | frames | boxes | boxes/frame | small % | background frames |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| train | 7,543 | 59,227 | 7.9 | 58.1 | 844 |
-| val | 1,091 | 9,390 | 8.6 | 46.6 | 5 |
+> **Status:** pipeline complete and tested end to end; the six training runs
+> have not been executed yet — they run on a rented GPU. Every number
+> *elsewhere* in this README is already measured and reproducible today.
 
-Median box heights are 31 px (`car`), 34 px (`person`), 35 px (`bicycle`) in a
-640×512 frame. `dog` is annotated but excluded: 244 training boxes against
-36,209 for `car`, and mAP weights classes equally.
+All runs: YOLO11s, 60 epochs, 640 px, `batch: 32` on one RTX 4090, evaluated on
+the FLIR validation split.
 
-The download this was built against is missing its annotation JSONs and ~15% of
-its 8-bit JPEGs; the numbers above are after intersecting every source. What
-that means for the code — and why there is no test split — is in
-[docs/00](docs/00-the-dataset.md).
+**Transfer**
 
-## Quickstart
+| run | change | mAP50-95 | mAP50 | vs control | train time |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `pretrained` (control) | — | | | — | |
+| `scratch` | `model: yolo11s.yaml` | | | | |
+| `frozen_stem` | `freeze: 2` | | | | |
+| `frozen_backbone` | `freeze: 11` | | | | |
 
-```bash
-make setup      # uv sync
-make arms       # build all three preprocessing arms (~1 min, ~3.5 GB)
-make profile    # class balance, object scale, dynamic range -> reports/
-make smoke      # 1-epoch run to verify the pipeline end to end
-make pretrained # the control
-make eval       # comparison table -> reports/results.md
-```
+**Radiometry**
 
-If the download's `thermal_annotations.json` files are missing but converted
-YOLO labels survived:
+| run | mapping | mAP50-95 | mAP50 | vs control | train time |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `pretrained` (control) | FLIR AGC, 8-bit | | | — | |
+| `global_map` | fixed window, 16-bit | | | | |
+| `p1p99_map` | per-frame stretch, 16-bit | | | | |
 
-```bash
-make arms ADOPT="--adopt-labels Dataset/FLIR_ADAS_1_3/yolo/labels"
-```
+Read [docs/03](docs/03-reading-the-metrics.md) before quoting any single number
+from here — there is no held-out split in this download.
 
-On a rented GPU, provision with one command and calibrate before spending
-hours — see [docs/05](docs/05-running-on-rented-gpus.md):
+---
+
+## Command reference
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GokulEdakkePuram/ThermalObjectDetection/main/scripts/setup_remote.sh | bash
-uv run thermaldet probe pretrained global_map
-tmux new -s train && ./scripts/run_sweep.sh
-```
+# data
+uv run thermaldet convert --arm agc|global|p1p99 [--adopt-labels DIR]
+uv run thermaldet profile
 
-Everything is reachable directly:
+# analysis that needs no training
+uv run thermaldet stem-check yolo11s.pt
 
-```bash
-uv run thermaldet convert --arm global          # build one arm
-uv run thermaldet stem-check yolo11s.pt         # what survives greyscale input
-uv run thermaldet train frozen_stem --track wandb
-uv run thermaldet probe pretrained              # cost a run before starting it
-uv run thermaldet eval runs/train/*/weights/best.pt
-uv run thermaldet predict <weights> <frame.tiff>   # raw input is rendered first
-uv run thermaldet export <weights> --format onnx
+# training
+uv run thermaldet train pretrained [--profile cuda24] [--track wandb]
 uv run thermaldet train-manual --backbone-lr-mult 5.0
+uv run thermaldet probe pretrained global_map      # cost a run before starting it
+
+# evaluation and deployment
+uv run thermaldet eval runs/train/*/weights/best.pt
+uv run thermaldet predict <weights> <frame.tiff>   # raw input rendered first
+uv run thermaldet export <weights> --format onnx
 ```
 
-## How it is put together
+`make help` lists the equivalent Make targets. Every command takes `--help`.
+
+---
+
+## Repository layout
 
 ```
 configs/          one YAML per experiment, composed via `extends:`
@@ -197,65 +371,61 @@ src/thermaldet/
   export.py       ONNX / CoreML / TorchScript export
 scripts/          provisioning and unattended sweeps for a rented GPU box
 docs/             the reasoning, written as it was worked out
-tests/            config, conversion, radiometry and stem tests (`make test`)
+tests/            78 tests, none needing the dataset or a GPU (`make test`)
 Dockerfile        pinned training image
 ```
 
-Four deliberate choices:
+---
 
-**Hardware is not part of an experiment.** An experiment config says what to
-train; a profile in `configs/profiles/` says what the machine can hold, and
+## Design decisions
+
+**Hardware is separate from the experiment.** A config says what to train; a
+profile in `configs/profiles/` says what the machine can hold, and
 `load_profile` rejects any profile that tries to set `epochs` or `imgsz`. The
-payoff is one batch size across all six runs on one card, so the only thing
-that differs between two arms is the line their config changed.
+payoff is one batch size across all six runs, so the only difference between
+two arms is the line their config changed.
 
 **Every arm is built from the same frame list.** Not from whichever images that
-arm happens to have. This download is missing ~15% of the 8-bit JPEGs *and* 19
-frames of 16-bit that the JPEGs have, so per-arm intersection gave 7,562 frames
-against 7,543 — a difference small enough to be invisible and large enough to
-make a 1% gap unattributable. There is a
+arm happens to have — see finding 3 in the audit. There is a
 [regression test](tests/test_convert.py) holding it.
 
-**Cheap evidence before expensive evidence.** Both headline claims have a
-measurement that costs seconds and runs before any GPU is rented: `stem-check`
-for the transfer argument, `profile` for the radiometry one. Both are in this
-README with real numbers. The training runs test whether those measurements
-*matter*, which is a different and more expensive question.
+**Cheap evidence before expensive evidence.** Both claims have a measurement
+that costs seconds and runs before any GPU is rented: `stem-check` for the
+transfer argument, `profile` for the radiometry one. The runs test whether
+those measurements *matter*, which is the expensive question.
 
 **Runs are traceable.** Each run writes its fully-resolved config — profile
 overlay included — to `runs/train/<name>/thermaldet_config.json`, and
 Ultralytics' global data and output directories are pinned into the repo rather
-than scattered across `$HOME`. `eval` reads that file back to decide which
-preprocessing arm a checkpoint should be scored against.
+than scattered across `$HOME`. `eval` reads that file back to decide which arm
+a checkpoint should be scored against.
 
-## Notes
+---
 
-Written as the work was done, not reconstructed afterwards:
+## Documentation
 
-- [00 — The dataset](docs/00-the-dataset.md) — FLIR 1.3 vs v2, the label
-  format, why the RGB frames cannot serve as a second modality, and what is
-  missing from this download
+- [00 — The dataset](docs/00-the-dataset.md) — FLIR 1.3 vs v2, label format,
+  and the full audit
 - [01 — What transfers from COCO](docs/01-what-transfers-from-coco.md) — the
-  stem measurement, the four transfer arms, and what would falsify them
+  stem measurement and the four transfer arms
 - [02 — Radiometry and AGC](docs/02-radiometry-and-agc.md) — what per-frame
-  gain control destroys, what a fixed window costs, and the confound that had
-  to be removed first
+  gain control destroys, and what a fixed window costs
 - [03 — Reading the metrics](docs/03-reading-the-metrics.md) — mAP50 vs
-  mAP50-95, a 12:1 class imbalance, and why there is no held-out number here
+  mAP50-95, the class imbalance, and why there is no held-out number here
 - [04 — Experiment log](docs/04-experiment-log.md) — running journal, with
   expectations recorded before each run
-- [05 — Running on rented GPUs](docs/05-running-on-rented-gpus.md) — hardware
-  profiles, calibrating a run before paying for it, and what wastes a rental
+- [05 — Running on rented GPUs](docs/05-running-on-rented-gpus.md) — profiles,
+  calibrating a run before paying for it, and what wastes a rental
 
 ## Preserved weights
 
 [`models/flir_yolov8n_finetuned.pt`](models/) is a YOLOv8n checkpoint from an
 earlier pass over this dataset, on four classes (`person`, `bicycle`, `car`,
-`dog`). It predates everything above and is not part of any ablation — it is
+`dog`). It predates everything above and is not part of any ablation. It is
 kept because it is a working thermal detector and a fixed reference point.
 
 ## Licence
 
 Code: MIT. Ultralytics YOLO is AGPL-3.0 — relevant if you build on this
-commercially. FLIR ADAS is released under its own terms for research use;
-check upstream before redistributing anything derived from it.
+commercially. FLIR ADAS is released under its own terms for research use; check
+upstream before redistributing anything derived from it.

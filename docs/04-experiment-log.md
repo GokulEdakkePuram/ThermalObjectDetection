@@ -30,14 +30,19 @@ explanation, and what would distinguish between the candidates?
 **Question.** Is the FLIR download usable as it stands?
 
 **Result.** Partly. No `thermal_annotations.json` in any split; the 8-bit
-JPEGs are ~15% short in train and ~20% in val; the 16-bit TIFFs are complete;
-pre-converted YOLO labels survived for train and val. Usable via
-`--adopt-labels`, at 7,543 train / 1,091 val frames after intersecting the
-sources. No test split.
+JPEGs are 14.9% short in train and 20.1% in val; the 16-bit TIFFs and the
+pre-converted YOLO labels are complete. The copy also carries ~1,500 Finder
+`" 2"` duplicates spread unevenly across the source directories. Usable via
+`--adopt-labels`, at 7,543 train / 1,091 val frames after filtering duplicates
+and intersecting the sources. No test split.
 
 **Reading.** The missing `video/` annotations are the real cost -- it removes
 the held-out measurement entirely. Everything downstream is validation-only
 and should be read as optimistic.
+
+The duplicates were nearly missed, and would have shown up later as an
+unexplained 19-frame gap between two arms. Worth remembering that a dataset
+which has been copied around is not the dataset that was published.
 
 **Next.** Measure the radiometric dynamic range, which decides whether the
 `global` arm is worth building at all.

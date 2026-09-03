@@ -87,17 +87,27 @@ losing to `agc` has two explanations — *per-frame normalisation helps*, or
 The arms are built from *different image files*, so the first thing to check is
 that they are built from the same *frames*.
 
-They were not. The download is missing ~15% of the 8-bit JPEGs, while the
-16-bit TIFFs are complete -- but the TIFFs are also missing 19 frames that the
-JPEGs have. Taking the intersection per-arm, over only the sources each arm
-needed, produced 7,562 training frames for `agc` and 7,543 for `p1p99`.
+They were not. The download is missing ~15% of the 8-bit JPEGs while the
+16-bit TIFFs are complete, so taking the intersection per-arm -- over only the
+sources each arm needed -- produced 7,562 training frames for `agc` against
+7,543 for `p1p99`.
 
 Nineteen frames out of seven and a half thousand will not move mAP much. They
 will move it a little, in an unknown direction, and that is worse: a 1% gap
-between two arms would have had no attributable cause. The frame list is now
-intersected across every source the release ships, whichever arm is being
-built, and there is a
-[regression test](../tests/test_convert.py) holding it there.
+between two arms would have had no attributable cause. So the frame list is
+now intersected across every source the release ships, whichever arm is being
+built, with a [regression test](../tests/test_convert.py) holding it.
+
+Chasing the 19 down found something worse than an inconsistency. All of them
+were `"FLIR_01437 2.jpeg"`-style Finder copies, made when the dataset was
+moved between machines, which happened to exist beside the JPEGs and not
+beside the TIFFs. Left in, a duplicate frame trains **twice** -- and one that
+survives in only some directories trains twice in only some arms. They are now
+dropped by pattern at source; nothing legitimate in FLIR ends in a space and a
+number.
+
+Both fixes are kept. The intersection is the half that works without having
+noticed the cause, and there will be another cause.
 
 ## Caveats
 

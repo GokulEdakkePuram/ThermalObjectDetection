@@ -79,18 +79,39 @@ documenting because it shaped the code:
 
 - **No `thermal_annotations.json` at all**, in any split. The converter's
   primary path cannot run.
-- **The 8-bit JPEGs are ~15% short**: 7,883 of 8,862 in train, 1,091 of 1,366
-  in val. The 16-bit TIFFs are complete.
-- Pre-converted YOLO labels for train and val survived, covering the full id
-  range.
+- **Pre-converted YOLO labels survived** for train and val, covering the full
+  id range: 8,862 and 1,366 unique stems, matching FLIR's own counts.
+- **The 16-bit TIFFs are complete** — 8,862 train, 1,366 val.
+- **The 8-bit JPEGs are short**: 7,543 unique of 8,862 in train (14.9%
+  missing), 1,091 of 1,366 in val (20.1% missing).
+- **The copy is littered with Finder duplicates** — `"FLIR_01437 2.jpeg"` and
+  friends, created by moving the dataset between machines. 653 train labels,
+  401 train TIFFs and 340 train JPEGs; 95 val labels.
 
-Two features exist because of this. `--adopt-labels` reads an existing YOLO
+Per source, counted:
+
+| split | source | files | unique | `" 2"` copies |
+| --- | --- | ---: | ---: | ---: |
+| train | YOLO labels | 9,515 | 8,862 | 653 |
+| train | 16-bit TIFF | 9,263 | 8,862 | 401 |
+| train | 8-bit JPEG | 7,883 | 7,543 | 340 |
+| val | YOLO labels | 1,461 | 1,366 | 95 |
+| val | 16-bit TIFF | 1,366 | 1,366 | 0 |
+| val | 8-bit JPEG | 1,091 | 1,091 | 0 |
+
+The duplicates are not cosmetic. A duplicate frame trains twice, and one that
+survives in only some directories trains twice in only some arms -- which is
+precisely what happened before they were filtered (see
+[doc 02](02-radiometry-and-agc.md)). Nothing legitimate in FLIR ends in a
+space and a number, so they are dropped by pattern in `_stems` and
+`adopted_labels`.
+
+Three features exist because of this. `--adopt-labels` reads an existing YOLO
 label directory instead of a COCO JSON, remapping class ids to the requested
 set (the source order has to be named, since nothing in a `.txt` records it).
-And the frame list is intersected across *every* image source rather than the
-one the current arm needs -- see
-[`frame_index`](../src/thermaldet/convert.py) and the note in
-[doc 02](02-radiometry-and-agc.md).
+Copy-collision duplicates are filtered by pattern. And the frame list is
+intersected across *every* image source rather than the one the current arm
+needs -- see [`frame_index`](../src/thermaldet/convert.py).
 
 Net result, and what every number in this repo is measured on:
 
