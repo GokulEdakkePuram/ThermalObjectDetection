@@ -176,24 +176,22 @@ def adopted_labels(
 
 
 def frame_index(
-    root: Path, layout: Layout, labels: dict[str, list[str]], require_raw: bool
+    root: Path, layout: Layout, labels: dict[str, list[str]]
 ) -> tuple[list[str], dict[str, int]]:
-    """The frames every arm will be built from, and what got excluded.
+    """The frames every arm is built from, and what got excluded.
 
-    The intersection matters. This particular download is missing ~15% of the
-    8-bit JPEGs while the 16-bit TIFFs are complete, so building each arm from
-    "whatever images that arm happens to have" would mean the 8-bit and 16-bit
-    runs trained on different data -- and the ablation would be measuring the
-    difference in dataset size at least as much as the difference in
-    preprocessing.
+    Intersected across *every* image source the release ships, not just the
+    one the current arm needs. Doing it per-arm looks equivalent and is not:
+    this download is missing ~15% of the 8-bit JPEGs, and the 16-bit TIFFs are
+    missing 19 frames that the JPEGs have, so the arms came out at 7,562 and
+    7,543 training frames. A 19-frame difference is small but it is exactly
+    the kind of difference that makes a 1% gap in mAP unattributable.
     """
     available = {name: _stems(root / sub) for name, sub in layout.image_subdirs.items()}
 
     stems = set(labels)
     counts = {"labelled": len(stems)}
     for name, present in available.items():
-        if name == "raw" and not require_raw:
-            continue
         counts[f"missing_{name}"] = len(stems - present)
         stems &= present
 
@@ -287,6 +285,10 @@ def build_split(
 
     source_dir = root / layout.image_subdirs["agc" if render is None else "raw"]
 
+    keep = set(stems)
+    for stale in (p for p in (*image_dir.iterdir(), *label_dir.iterdir()) if p.stem not in keep):
+        stale.unlink()
+
     for stem in stems:
         lines = labels.get(stem, [])
         (label_dir / f"{stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
@@ -357,7 +359,7 @@ def convert(
             print(f"[{split:>5}  ] skipped -- no annotations and nothing to adopt")
             continue
 
-        stems, counts = frame_index(split_root, layout, labels, require_raw=render is not None)
+        stems, counts = frame_index(split_root, layout, labels)
         if not stems:
             print(f"[{split:>5}  ] skipped -- no frame has both a label and an image")
             continue
