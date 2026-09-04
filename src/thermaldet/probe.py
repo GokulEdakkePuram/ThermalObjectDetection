@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_config
+from .paths import RUNS_DIR
 
 DEFAULT_EPOCHS = 3
 DEFAULT_FRACTIONS = (0.1, 0.3)
@@ -145,6 +146,10 @@ def probe(
             **cfg.train_args,
             "fraction": fraction,
             "plots": False,
+            # Calibration runs go somewhere `thermaldet eval runs/train/*` will
+            # not sweep up. A three-epoch run on 10% of the data still writes a
+            # best.pt, and it has no business appearing in a results table.
+            "project": str(RUNS_DIR / "probe"),
             # Validation is a fixed per-epoch cost that does not scale with the
             # training fraction, so including it would corrupt the fit.
             "val": False,

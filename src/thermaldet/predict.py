@@ -73,10 +73,15 @@ def predict(
         if raw:
             arm, render = arm_mapping(weights)
             if render is None:
+                reason = (
+                    "the visible-spectrum frames, which a thermal TIFF is not"
+                    if arm == "rgb"
+                    else "FLIR's 8-bit frames, which are gain-control output -- there is no "
+                    "way to reproduce that mapping from a raw TIFF"
+                )
                 raise SystemExit(
-                    f"{weights} was trained on FLIR's 8-bit JPEGs ('{arm}'), which are AGC "
-                    f"output. There is no way to reproduce that mapping from a raw TIFF, so "
-                    f"point --source at the 8-bit frames instead."
+                    f"{weights} was trained on {reason} ('{arm}' arm). "
+                    f"Point --source at the frames in data/ instead."
                 )
             print(f"[thermaldet] rendering {len(raw)} raw frames through the '{arm}' mapping")
             source = str(_render_sources(raw, render, Path(tmp)))
