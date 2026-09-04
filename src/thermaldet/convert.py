@@ -1,29 +1,29 @@
-"""Build an Ultralytics-shaped dataset out of a FLIR ADAS download.
+"""Build an Ultralytics-shaped dataset out of the FLIR ADAS v2 download.
 
-FLIR has shipped two incompatible layouts. Both are COCO underneath, so the
-only real difference is where the JSON lives and what the splits are called::
+v2 ships six directories -- three splits in each of two spectra -- and each one
+is self-describing::
 
-    ADAS 1.3                          ADAS v2
-    train/thermal_annotations.json    images_thermal_train/coco.json
-    train/thermal_8_bit/*.jpeg        images_thermal_train/data/*.jpg
-    train/thermal_16_bit/*.tiff       (no 16-bit imagery)
-    val/, video/                      images_thermal_val/, video_thermal_test/
+    images_thermal_train/   coco.json  data/*.jpg  analyticsData/*.tiff
+    images_thermal_val/     coco.json  data/*.jpg  analyticsData/*.tiff
+    video_thermal_test/     coco.json  data/*.jpg  analyticsData/*.tiff
+    images_rgb_train/       coco.json  data/*.jpg
+    images_rgb_val/         coco.json  data/*.jpg
+    video_rgb_test/         coco.json  data/*.jpg
 
-Both releases ship the raw 16-bit radiometric TIFFs that the second ablation
-needs -- 1.3 under ``thermal_16_bit``, v2 under ``analyticsData``. v2 also has
-~40% more frames, an annotated test split, and annotated RGB alongside the
-thermal, so it supports strictly more than 1.3 does.
+``data/`` holds the 8-bit frames the camera writes; ``analyticsData/`` holds
+the raw 16-bit radiometric frames behind them, which is what the radiometry
+ablation needs. The release notes mention that directory once.
 
-The output is one tree per preprocessing arm::
+The output is one tree per arm::
 
     data/flir_<arm>/
       images/{train,val,test}/...
       labels/{train,val,test}/*.txt
     configs/data/flir_<arm>.yaml
 
-Every arm is built from the *same* frame list -- see :func:`frame_index` --
-so a difference between two arms cannot be a difference in which frames they
-saw.
+The three thermal arms are built from the *same* frame list -- see
+:func:`frame_index` -- so a difference between two of them cannot be a
+difference in which frames they saw.
 """
 
 from __future__ import annotations
@@ -38,67 +38,69 @@ from pathlib import Path
 
 from .paths import CONFIG_DIR, DATA_DIR
 
-# Split name -> (directory, annotation filename) for each known layout.
-LAYOUT_V1 = {
-    "train": ("train", "thermal_annotations.json"),
-    "val": ("val", "thermal_annotations.json"),
-    "test": ("video", "thermal_annotations.json"),
-}
-LAYOUT_V2 = {
-    "train": ("images_thermal_train", "coco.json"),
-    "val": ("images_thermal_val", "coco.json"),
-    "test": ("video_thermal_test", "coco.json"),
-}
-
-# Where each layout keeps its imagery, relative to the split directory.
-IMAGE_SUBDIR_V1 = {"agc": "thermal_8_bit", "raw": "thermal_16_bit"}
-# v2 keeps the 16-bit frames under `analyticsData`, which is easy to miss --
-# the release notes mention it once, in the Download Contents section.
-IMAGE_SUBDIR_V2 = {"agc": "data", "raw": "analyticsData"}
-
-# 1.3 annotates four classes. `dog` is excluded by default and that is a
-# deliberate call, not an oversight: it has 244 boxes in train and 16 in val,
-# against 44,185 for `car`. mAP weights every class equally, so a class whose
-# AP is decided by sixteen boxes would add more variance between two ablation
-# arms than the thing being ablated. Pass --classes to put it back.
-LABEL_CLASSES_V1 = ["person", "bicycle", "car", "dog"]
-DEFAULT_CLASSES_V1 = ["person", "bicycle", "car"]
-DEFAULT_CLASSES_V2 = ["person", "bike", "car"]
+# The five classes with enough annotations to measure. v2 declares all 80 COCO
+# categories and uses 16, but the tail is unusable -- `dog` has four boxes in
+# the entire training split, and mAP would weight it as heavily as `car`'s
+# 73,623.
+#
+# `light` and `sign` are in the default set deliberately. They are the two
+# large classes a thermal sensor should find *harder* than a visible one: a
+# traffic light signals with colour and a street sign with printed contrast,
+# and neither survives an infrared sensor. Without them the modality
+# comparison is a foregone conclusion.
+DEFAULT_CLASSES = ["person", "bike", "car", "light", "sign"]
 
 IMAGE_SUFFIXES = (".jpeg", ".jpg", ".png", ".tiff")
 
 # Finder and Explorer resolve a name collision by appending " 2", " 3" and so
-# on, and a dataset copied between machines a few times collects them. They are
-# duplicates of a frame that is already present, so they must not enter the
-# dataset as extra training examples. FLIR stems are always `FLIR_00001` or
-# `FLIR_video_00001`, so nothing legitimate ends in a space and a number.
+# on, and a dataset copied between machines a few times collects them. They
+# duplicate a frame that is already present, so they must not enter as extra
+# training examples. Nothing FLIR ships ends in a space and a number.
 COPY_SUFFIX = re.compile(r" \d+$")
 
 
 @dataclass(frozen=True)
-class Layout:
-    """Which FLIR release we are looking at, and where its pieces live."""
+class Spectrum:
+    """One sensor's three splits, and where each keeps its imagery."""
 
-    version: str
-    splits: dict[str, tuple[str, str]]
+    name: str
+    splits: dict[str, str]
+    # Source name -> subdirectory. "base" is the 8-bit frame every arm starts
+    # from; "raw" is the 16-bit radiometric frame, thermal only.
     image_subdirs: dict[str, str]
 
     @property
     def has_raw(self) -> bool:
-        """Whether this release ships the 16-bit radiometric imagery."""
         return "raw" in self.image_subdirs
 
 
-def detect_layout(root: Path) -> Layout:
-    """Work out which FLIR release ``root`` contains."""
-    if (root / "images_thermal_train").is_dir():
-        return Layout("v2", LAYOUT_V2, IMAGE_SUBDIR_V2)
-    if (root / "train" / "thermal_8_bit").is_dir() or (root / "train" / "thermal_16_bit").is_dir():
-        return Layout("1.3", LAYOUT_V1, IMAGE_SUBDIR_V1)
-    raise SystemExit(
-        f"{root} looks like neither FLIR ADAS 1.3 nor v2.\n"
-        f"Expected either train/thermal_8_bit/ or images_thermal_train/."
-    )
+THERMAL = Spectrum(
+    "thermal",
+    {
+        "train": "images_thermal_train",
+        "val": "images_thermal_val",
+        "test": "video_thermal_test",
+    },
+    {"base": "data", "raw": "analyticsData"},
+)
+
+RGB = Spectrum(
+    "rgb",
+    {"train": "images_rgb_train", "val": "images_rgb_val", "test": "video_rgb_test"},
+    {"base": "data"},
+)
+
+SPECTRA = {s.name: s for s in (THERMAL, RGB)}
+
+
+def check_root(root: Path) -> Path:
+    """Fail early, and with the actual reason, if this is not a v2 download."""
+    if not (root / "images_thermal_train" / "coco.json").exists():
+        raise SystemExit(
+            f"{root} does not look like a FLIR ADAS v2 download.\n"
+            f"Expected {root / 'images_thermal_train' / 'coco.json'}."
+        )
+    return root
 
 
 def _stems(directory: Path) -> set[str]:
@@ -115,9 +117,10 @@ def _stems(directory: Path) -> set[str]:
 def coco_labels(annotations: Path, keep: list[str]) -> dict[str, list[str]]:
     """Read a COCO JSON into ``{stem: [yolo lines]}``.
 
-    Categories are matched by *name*, not id: 1.3 uses COCO's original ids
-    (person=1, car=3, dog=18) while v2 renumbered and renamed them, so any
-    hard-coded mapping is wrong on one of the two.
+    Categories are matched by *name*. v2's ids are COCO's, so they are neither
+    contiguous nor in the order we want (`light` is 10, `sign` is 12), and the
+    thermal and visible files must produce the same YOLO indices for the
+    modality comparison to mean anything.
     """
     coco = json.loads(annotations.read_text())
 
@@ -149,7 +152,7 @@ def _yolo_line(class_id: int, bbox: list[float], width: int, height: int) -> str
 
     Boxes are clipped to the frame and degenerate ones dropped -- FLIR's
     annotations include a handful of zero-width boxes that Ultralytics would
-    otherwise silently turn into NaN loss.
+    otherwise turn into NaN loss an hour into a run.
     """
     x, y, w, h = (float(v) for v in bbox)
     x0, y0 = max(0.0, x), max(0.0, y)
@@ -161,55 +164,22 @@ def _yolo_line(class_id: int, bbox: list[float], width: int, height: int) -> str
     return f"{class_id} {cx:.6f} {cy:.6f} {bw / width:.6f} {bh / height:.6f}"
 
 
-def adopted_labels(
-    directory: Path, label_classes: list[str], keep: list[str]
-) -> dict[str, list[str]]:
-    """Read an existing YOLO label directory, remapping to the kept classes.
-
-    The escape hatch for a download whose annotation JSONs have gone missing.
-    ``label_classes`` names the class order those files were written in --
-    there is nothing in a YOLO ``.txt`` that records it, so it has to be
-    supplied rather than guessed.
-    """
-    remap = {label_classes.index(name): keep.index(name) for name in keep if name in label_classes}
-
-    out: dict[str, list[str]] = {}
-    for path in sorted(directory.glob("*.txt")):
-        if COPY_SUFFIX.search(path.stem):
-            continue
-        lines = []
-        for line in path.read_text().splitlines():
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            source_id = int(float(parts[0]))
-            if source_id in remap:
-                lines.append(" ".join([str(remap[source_id]), *parts[1:5]]))
-        out[path.stem] = lines
-    return out
-
-
 def frame_index(
-    root: Path, layout: Layout, labels: dict[str, list[str]]
+    split_root: Path, spectrum: Spectrum, labels: dict[str, list[str]]
 ) -> tuple[list[str], dict[str, int]]:
-    """The frames every arm is built from, and what got excluded.
+    """The frames every arm of this spectrum is built from, and what was excluded.
 
-    Intersected across *every* image source the release ships, not just the
-    one the current arm needs. Doing it per-arm looks equivalent and is not:
-    this download is missing ~15% of the 8-bit JPEGs, so the arms came out at
-    7,562 and 7,543 training frames. A 19-frame difference is small, but it is
-    exactly the kind that makes a 1% gap in mAP unattributable.
-
-    Those 19 turned out to be Finder ``" 2"`` copies sitting beside the JPEGs
-    and not beside the TIFFs, which is why ``_stems`` now filters them at
-    source. The intersection stays regardless: it is the half that does not
-    depend on having noticed the cause.
+    Intersected across *every* image source the spectrum has, not just the one
+    the current arm needs. On a clean v2 download this changes nothing -- the
+    8-bit and 16-bit directories match one for one. It stays because the check
+    costs a directory listing and the failure it prevents is silent: two arms
+    that were meant to differ only in preprocessing differing also in which
+    frames they trained on.
     """
-    available = {name: _stems(root / sub) for name, sub in layout.image_subdirs.items()}
-
     stems = set(labels)
     counts = {"labelled": len(stems)}
-    for name, present in available.items():
+    for name, subdir in spectrum.image_subdirs.items():
+        present = _stems(split_root / subdir)
         counts[f"missing_{name}"] = len(stems - present)
         stems &= present
 
@@ -230,12 +200,12 @@ def link_or_copy(src: Path, dst: Path, *, copy: bool) -> None:
 
 
 def write_data_yaml(arm: str, classes: list[str], splits: list[str], note: str = "") -> Path:
-    """Write the Ultralytics data YAML for one preprocessing arm."""
+    """Write the Ultralytics data YAML for one arm."""
     out = CONFIG_DIR / "data" / f"flir_{arm}.yaml"
     out.parent.mkdir(parents=True, exist_ok=True)
 
     lines = [
-        f"# Ultralytics data config for the '{arm}' preprocessing arm.",
+        f"# Ultralytics data config for the '{arm}' arm.",
         "# Generated by `thermaldet convert` -- re-run it rather than editing.",
     ]
     if note:
@@ -262,32 +232,9 @@ def class_histogram(labels: dict[str, list[str]], stems: list[str]) -> Counter[i
     return counts
 
 
-def load_labels(
-    root: Path,
-    layout: Layout,
-    split: str,
-    keep: list[str],
-    label_classes: list[str],
-    adopt_from: Path | None,
-) -> dict[str, list[str]] | None:
-    """Get labels for one split from whichever source is actually present."""
-    subdir, filename = layout.splits[split]
-
-    annotations = root / subdir / filename
-    if annotations.exists():
-        return coco_labels(annotations, keep)
-
-    if adopt_from is not None:
-        directory = adopt_from / split
-        if directory.is_dir():
-            return adopted_labels(directory, label_classes, keep)
-
-    return None
-
-
 def build_split(
-    root: Path,
-    layout: Layout,
+    split_root: Path,
+    spectrum: Spectrum,
     split: str,
     arm: str,
     stems: list[str],
@@ -301,7 +248,7 @@ def build_split(
     image_dir.mkdir(parents=True, exist_ok=True)
     label_dir.mkdir(parents=True, exist_ok=True)
 
-    source_dir = root / layout.image_subdirs["agc" if render is None else "raw"]
+    source_dir = split_root / spectrum.image_subdirs["base" if render is None else "raw"]
 
     keep = set(stems)
     for stale in (p for p in (*image_dir.iterdir(), *label_dir.iterdir()) if p.stem not in keep):
@@ -319,7 +266,7 @@ def build_split(
             link_or_copy(src, image_dir / src.name, copy=copy)
         return
 
-    # Rendering 10k TIFFs is the one genuinely slow step in the pipeline, and
+    # Rendering 15k TIFFs is the one genuinely slow step in the pipeline, and
     # it is embarrassingly parallel. The mapping objects are frozen dataclasses
     # precisely so they survive being pickled out to a worker.
     pending = [
@@ -338,51 +285,44 @@ def build_split(
 def convert(
     root: Path,
     arm: str = "agc",
+    spectrum: str = "thermal",
     classes: list[str] | None = None,
-    label_classes: list[str] | None = None,
-    adopt_from: Path | None = None,
     render=None,
     copy: bool = False,
 ) -> dict:
-    """Build one preprocessing arm and return what was written.
+    """Build one arm and return what was written.
 
-    ``render`` is ``None`` for the arm that uses FLIR's shipped 8-bit JPEGs,
-    and a ``(tiff, png) -> None`` callable for an arm rendered from the raw
-    16-bit imagery. The frame list is computed identically either way.
+    ``render`` is ``None`` for an arm that uses the shipped 8-bit frames, and a
+    ``(tiff, png) -> None`` callable for one rendered from the raw 16-bit
+    imagery. The frame list is computed identically either way.
     """
-    layout = detect_layout(root)
-    classes = classes or (DEFAULT_CLASSES_V1 if layout.version == "1.3" else DEFAULT_CLASSES_V2)
-    label_classes = label_classes or (
-        LABEL_CLASSES_V1 if layout.version == "1.3" else DEFAULT_CLASSES_V2
-    )
+    check_root(root)
+    spec = SPECTRA[spectrum]
+    classes = classes or DEFAULT_CLASSES
 
-    if render is not None and not layout.has_raw:
+    if render is not None and not spec.has_raw:
         raise SystemExit(
-            f"FLIR {layout.version} ships no 16-bit imagery, so the '{arm}' arm cannot be built. "
-            f"The radiometry ablation needs the 1.3 release."
+            f"The '{spec.name}' spectrum has no 16-bit imagery, so the '{arm}' arm "
+            f"cannot be built from it."
         )
 
-    print(f"[layout ] FLIR ADAS {layout.version} at {root}")
+    print(f"[source ] FLIR ADAS v2, {spec.name} at {root}")
     print(f"[classes] {list(enumerate(classes))}")
 
     summary: dict[str, dict] = {}
-    for split in layout.splits:
-        subdir, _ = layout.splits[split]
+    for split, subdir in spec.splits.items():
         split_root = root / subdir
-        if not split_root.is_dir():
+        if not (split_root / "coco.json").exists():
+            print(f"[{split:>5}  ] skipped -- no {split_root / 'coco.json'}")
             continue
 
-        labels = load_labels(root, layout, split, classes, label_classes, adopt_from)
-        if labels is None:
-            print(f"[{split:>5}  ] skipped -- no annotations and nothing to adopt")
-            continue
-
-        stems, counts = frame_index(split_root, layout, labels)
+        labels = coco_labels(split_root / "coco.json", classes)
+        stems, counts = frame_index(split_root, spec, labels)
         if not stems:
             print(f"[{split:>5}  ] skipped -- no frame has both a label and an image")
             continue
 
-        build_split(split_root, layout, split, arm, stems, labels, render, copy)
+        build_split(split_root, spec, split, arm, stems, labels, render, copy)
 
         histogram = class_histogram(labels, stems)
         empty = sum(1 for stem in stems if not labels.get(stem))
@@ -400,11 +340,11 @@ def convert(
         )
 
     if not summary:
-        raise SystemExit("Nothing was converted. Check --flir-root and --adopt-labels.")
+        raise SystemExit("Nothing was converted. Check --flir-root.")
 
     note = (
         "Frames are the intersection of those with a label and an image in every\n"
-        "source, so each arm sees exactly the same frames."
+        "source, so each arm of a spectrum sees exactly the same frames."
     )
     data_yaml = write_data_yaml(arm, classes, list(summary), note)
 
@@ -413,12 +353,12 @@ def convert(
         json.dumps(
             {
                 "arm": arm,
-                "flir_version": layout.version,
+                "spectrum": spec.name,
                 "source": str(root),
                 "classes": classes,
                 # How the pixels were produced. Inference has to reproduce it:
-                # a model trained on a global window and fed AGC JPEGs sees a
-                # different image of the same scene, and fails quietly.
+                # a model trained on a global window and fed 8-bit frames sees
+                # a different image of the same scene, and fails quietly.
                 "mapping": (
                     {"kind": "agc"}
                     if render is None

@@ -13,10 +13,20 @@ from pathlib import Path
 
 from .paths import DATASET_DIR, REPORTS_DIR
 
+# arm -> (spectrum, how its pixels are made)
+ARMS = {
+    "agc": ("thermal", "FLIR's shipped 8-bit frames"),
+    "global": ("thermal", "16-bit through one fixed window"),
+    "p1p99": ("thermal", "16-bit through a per-frame percentile stretch"),
+    "rgb": ("rgb", "the visible-spectrum frames"),
+}
+
+RAW_TRAIN_DIR = "images_thermal_train/analyticsData"
+
 
 def _raw_dir(root: Path) -> Path | None:
-    """The 16-bit training frames, if this release ships them."""
-    candidate = root / "train" / "thermal_16_bit"
+    """The 16-bit training frames, if they are where they should be."""
+    candidate = root / RAW_TRAIN_DIR
     return candidate if candidate.is_dir() else None
 
 
@@ -24,14 +34,18 @@ def _cmd_convert(args: argparse.Namespace) -> int:
     from .convert import convert
     from .radiometry import GlobalLinear, PercentileStretch, measure_window
 
+    spectrum, _ = ARMS[args.arm]
+
     render = None
     if args.arm == "p1p99":
         render = PercentileStretch()
     elif args.arm == "global":
         raw = _raw_dir(args.flir_root)
         if raw is None:
-            print(f"No 16-bit frames under {args.flir_root}.", file=sys.stderr)
+            print(f"No 16-bit frames under {args.flir_root / RAW_TRAIN_DIR}.", file=sys.stderr)
             return 1
+        # Measured on the training split only. Taking it over validation too
+        # would leak the test-time distribution into the preprocessing.
         lo, hi = measure_window(raw)
         print(f"[window ] global map fixed at [{lo:.0f}, {hi:.0f}] counts")
         render = GlobalLinear(lo, hi)
@@ -39,8 +53,8 @@ def _cmd_convert(args: argparse.Namespace) -> int:
     convert(
         args.flir_root,
         arm=args.arm,
+        spectrum=spectrum,
         classes=args.classes,
-        adopt_from=args.adopt_labels,
         render=render,
         copy=args.copy,
     )
@@ -145,24 +159,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--arm",
         default="agc",
-        choices=["agc", "global", "p1p99"],
-        help="agc: FLIR's 8-bit JPEGs; global/p1p99: rendered from the 16-bit TIFFs",
+        choices=sorted(ARMS),
+        help="; ".join(f"{name}: {what}" for name, (_, what) in sorted(ARMS.items())),
     )
-    p.add_argument("--flir-root", type=Path, default=DATASET_DIR / "FLIR_ADAS_1_3")
+    p.add_argument("--flir-root", type=Path, default=DATASET_DIR / "FLIR_ADAS_v2")
     p.add_argument("--classes", nargs="+", default=None, help="class names, in YOLO index order")
-    p.add_argument(
-        "--adopt-labels",
-        type=Path,
-        default=None,
-        help="directory of existing YOLO labels (<dir>/train, <dir>/val), for a "
-        "download whose annotation JSONs are missing",
-    )
     p.add_argument("--copy", action="store_true", help="copy images instead of symlinking")
     p.set_defaults(func=_cmd_convert)
 
     p = sub.add_parser("profile", help="measure class balance, object scale and dynamic range")
     p.add_argument("--data", default="configs/data/flir_agc.yaml")
-    p.add_argument("--flir-root", type=Path, default=DATASET_DIR / "FLIR_ADAS_1_3")
+    p.add_argument("--flir-root", type=Path, default=DATASET_DIR / "FLIR_ADAS_v2")
     p.set_defaults(func=_cmd_profile)
 
     p = sub.add_parser("train", help="fine-tune a model from a config")
@@ -216,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("weights", nargs="+")
     p.add_argument("--data", default=None, help="default: the arm each checkpoint was trained on")
     p.add_argument("--imgsz", type=int, default=640)
-    p.add_argument("--split", default="val")
+    p.add_argument("--split", default="test", choices=["train", "val", "test"])
     p.add_argument("--device", default="auto")
     p.set_defaults(func=_cmd_eval)
 
