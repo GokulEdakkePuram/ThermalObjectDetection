@@ -1,6 +1,6 @@
 # The 8-bit frames are not what the sensor saw
 
-Every FLIR ADAS result in the literature is trained on `thermal_8_bit/*.jpeg`.
+Every FLIR ADAS result in the literature is trained on the frames in `data/`.
 Those files are not the camera's output. They are the output of **automatic
 gain control**: each frame's own intensity range is stretched to fill 0-255
 before it is written.
@@ -12,8 +12,8 @@ particular frame* happened to leave available. The same person, in the same
 pose, is a different pixel value in the next frame if a hot exhaust enters the
 scene.
 
-The 1.3 release ships the raw 16-bit TIFFs alongside, which makes this
-testable rather than arguable.
+v2 ships the raw 16-bit frames alongside, under `analyticsData/`, which makes
+this testable rather than arguable.
 
 ## What the raw data looks like
 
@@ -21,32 +21,24 @@ testable rather than arguable.
 
 | quantity | counts |
 | --- | ---: |
-| median frame span (1st-99th percentile) | 873 |
-| span across frames (nothing clipped) | 2,987 |
-| the global window this repo uses (pooled p0.5-p99.5) | 2,096 |
+| median frame span (1st-99th percentile) | 764 |
+| span across frames (nothing clipped) | 3,097 |
+| the global window this repo uses (pooled p0.5-p99.5) | 2,219 |
 
 Measured over 400 sampled training frames by `thermaldet profile`.
 
 ## The trade, before any GPU time
 
 A single fixed window has to be wide enough for every frame in the dataset. A
-median frame spans 873 counts inside a 2,096-count window, so it reaches:
+median frame spans 764 counts inside a 2,219-count window, so it reaches:
 
 ```
-255 * 873 / 2096  =  106 of 255 output levels
+255 * 764 / 2219  =  88 of 255 output levels
 ```
 
-**Absolute radiometry costs 2.4x of per-frame contrast.** That number is
+**Absolute radiometry costs 2.9x of per-frame contrast.** That number is
 available for the price of reading 400 TIFFs, and it is what makes this a real
 trade rather than an obvious win for either side.
-
-Checked on a real frame (`FLIR_00001`), the prediction holds:
-
-| arm | std. dev. | p1 | p99 |
-| --- | ---: | ---: | ---: |
-| `agc` (FLIR's JPEG) | 63.7 | 9 | 249 |
-| `global` | 37.2 | 11 | 184 |
-| `p1p99` | 54.4 | 0 | 255 |
 
 ## The three arms
 
@@ -82,32 +74,19 @@ losing to `agc` has two explanations — *per-frame normalisation helps*, or
    interesting result, and would make the 16-bit files worth the disk they
    take.
 
-## The confound that had to be removed first
+## The frames are the same frames
 
-The arms are built from *different image files*, so the first thing to check is
-that they are built from the same *frames*.
+The arms are built from different image *files*, so the first thing to check is
+that they are built from the same *frames*. On v2 they are: the `data/` and
+`analyticsData/` directories match one for one in every split, and all three
+thermal arms come out at 10,742 / 1,144 / 3,749 frames with 168,238 / 16,244 /
+55,371 boxes.
 
-They were not. The download is missing ~15% of the 8-bit JPEGs while the
-16-bit TIFFs are complete, so taking the intersection per-arm -- over only the
-sources each arm needed -- produced 7,562 training frames for `agc` against
-7,543 for `p1p99`.
-
-Nineteen frames out of seven and a half thousand will not move mAP much. They
-will move it a little, in an unknown direction, and that is worse: a 1% gap
-between two arms would have had no attributable cause. So the frame list is
-now intersected across every source the release ships, whichever arm is being
-built, with a [regression test](../tests/test_convert.py) holding it.
-
-Chasing the 19 down found something worse than an inconsistency. All of them
-were `"FLIR_01437 2.jpeg"`-style Finder copies, made when the dataset was
-moved between machines, which happened to exist beside the JPEGs and not
-beside the TIFFs. Left in, a duplicate frame trains **twice** -- and one that
-survives in only some directories trains twice in only some arms. They are now
-dropped by pattern at source; nothing legitimate in FLIR ends in a space and a
-number.
-
-Both fixes are kept. The intersection is the half that works without having
-noticed the cause, and there will be another cause.
+The converter still intersects the frame list across every image source rather
+than trusting that, because the check costs a directory listing and the failure
+it prevents is silent -- two arms meant to differ only in preprocessing
+differing also in what they trained on. There is a
+[regression test](../tests/test_convert.py) holding it.
 
 ## Caveats
 

@@ -7,8 +7,8 @@ non-stationary* transform, and it throws away the one thing a thermal sensor
 uniquely offers -- an absolute measurement. After AGC, a 310 K person maps to
 whatever grey level the rest of that particular frame left available.
 
-The 1.3 release also ships the raw 16-bit TIFFs, which makes the alternative
-testable. Three mappings, identical in every other respect:
+FLIR ships the raw 16-bit TIFFs alongside, under ``analyticsData/``, which
+makes the alternative testable. Three mappings, identical in every other respect:
 
 ``agc``
     FLIR's shipped 8-bit JPEGs. The control, and what every FLIR paper uses.
@@ -24,16 +24,16 @@ testable. Three mappings, identical in every other respect:
     per-frame normalisation".
 
 What this costs is measurable before any GPU time is spent, and
-:func:`frame_spans` measures it. Over 400 sampled training frames: a median
-frame's 1st-99th percentile span is **873 counts**, while the span across
-frames is **2,987**. So a single fixed window wide enough for the dataset
-leaves a median frame using roughly **106 of the 255 output levels** -- a 2.4x
+:func:`frame_spans` measures it. Over 400 sampled v2 training frames: a median
+frame's 1st-99th percentile span is **764 counts**, while the span across
+frames is **3,097**. So a single fixed window wide enough for the dataset
+leaves a median frame using roughly **88 of the 255 output levels** -- a 2.9x
 contrast loss, paid on every frame, in exchange for absolute radiometry.
 
 The prediction, written before running any of it: ``global`` loses to ``agc``,
 and ``p1p99`` lands close to ``agc``. That combination would say the useful
 content of AGC is the per-frame normalisation rather than FLIR's particular
-curve, and that absolute temperature is not worth 2.4x of contrast to a
+curve, and that absolute temperature is not worth 2.9x of contrast to a
 detector. If instead ``global`` wins, absolute radiometry is carrying real
 signal and the entire 8-bit convention is leaving it on the table.
 """

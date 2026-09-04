@@ -1,146 +1,177 @@
-# FLIR ADAS, and which release you actually have
+# FLIR ADAS v2
 
-FLIR has released this dataset twice, and the two are not interchangeable.
+[Teledyne FLIR Free ADAS Thermal Dataset v2](https://www.flir.com/oem/adas/adas-dataset-form/):
+26,442 annotated frames from a thermal and visible camera pair mounted on a
+vehicle, released January 2022.
 
-| | ADAS 1.3 | ADAS v2 |
-| --- | --- | --- |
-| splits | `train/`, `val/`, `video/` | `images_thermal_train/`, `images_thermal_val/`, `video_thermal_test/` |
-| annotations | `<split>/thermal_annotations.json` | `<split>/coco.json` |
-| 8-bit thermal | `thermal_8_bit/*.jpeg` | `data/*.jpg` |
-| **16-bit thermal** | `thermal_16_bit/*.tiff` | `analyticsData/*.tiff` |
-| paired RGB | `RGB/*.jpg`, unannotated | annotated, in `images_rgb_*` |
-| classes | person, bicycle, car, dog | person, bike, car |
+Everything below was verified against the files rather than read off the
+release notes.
 
-Both are COCO underneath, so [`convert.py`](../src/thermaldet/convert.py)
-detects which one it is looking at and reads either. Categories are matched by
-**name**, never by id: 1.3 keeps COCO's original numbering (`person=1`,
-`car=3`, `dog=18`) and v2 renumbered and renamed them, so any hard-coded id
-map is silently wrong on one of the two.
+## Layout
 
-**The numbers here are measured on 1.3**, because that is the copy that was
-available first. Both releases ship the raw 16-bit radiometric TIFFs that
-[the second ablation](02-radiometry-and-agc.md) needs -- 1.3 under
-`thermal_16_bit`, v2 under `analyticsData`. v2 additionally has ~40% more
-frames, an annotated test split, and annotated RGB, so it supports strictly
-more. That assessment is [doc 06](06-flir-v2.md).
+Six directories, three splits in each of two spectra, each self-describing:
 
-## What the frames are
+```
+Dataset/FLIR_ADAS_v2/
+├── images_thermal_train/   coco.json  data/*.jpg  analyticsData/*.tiff
+├── images_thermal_val/     coco.json  data/*.jpg  analyticsData/*.tiff
+├── video_thermal_test/     coco.json  data/*.jpg  analyticsData/*.tiff
+├── images_rgb_train/       coco.json  data/*.jpg
+├── images_rgb_val/         coco.json  data/*.jpg
+├── video_rgb_test/         coco.json  data/*.jpg
+└── rgb_to_thermal_vid_map.json
+```
 
-640x512, single channel, from a vehicle-mounted FLIR Tau 2 on public roads.
-The 8-bit JPEGs are 0-255 and the 16-bit TIFFs are raw sensor counts, which
-land in a narrow band around 6,000-8,000 out of a possible 65,535.
+`data/` holds the 8-bit frames the camera writes. **`analyticsData/` holds the
+raw 16-bit radiometric frames behind them** — the release notes mention that
+directory once, in the Download Contents section, and it is what
+[the radiometry ablation](02-radiometry-and-agc.md) needs.
 
-## The RGB frames are not usable as a second modality
+`index.json` sits alongside each `coco.json`. It is FLIR's own Conservator
+format, richer but unfiltered; `coco.json` is the cleaned version FLIR
+recommends for training, and the one used here. `index.json` is still worth
+keeping, because it carries per-video tags that `coco.json` does not — see
+[lighting](#lighting-metadata) below.
 
-This was the obvious second axis -- same scenes, two sensors, measure what
-thermal buys you -- and it does not work on 1.3. FLIR's own ReadMe says why:
+## What is on disk
 
-> The thermal and RGB camera did not have identical placement on the vehicle
-> and therefore had different viewing geometries, so the thermal annotations do
-> not represent the placement of objects in the RGB image.
+| split | frames | annotations | 8-bit | 16-bit |
+| --- | ---: | ---: | ---: | ---: |
+| `images_thermal_train` | 10,742 | 175,040 | 10,742 | 10,742 |
+| `images_thermal_val` | 1,144 | 16,696 | 1,144 | 1,144 |
+| `video_thermal_test` | 3,749 | 62,317 | 3,749 | 3,749 |
+| `images_rgb_train` | 10,318 | 169,174 | 10,318 | — |
+| `images_rgb_val` | 1,085 | 16,909 | 1,085 | — |
+| `video_rgb_test` | 3,749 | 84,786 | 3,749 | — |
 
-The RGB frames are 1800x1600 against the thermal 640x512, from a different
-position, with no annotations of their own. There is no honest way to train an
-RGB detector on them, so there is no RGB arm here. v2 ships annotated RGB and
-would support it.
+**The download is clean.** Every `file_name` in every `coco.json` resolves on
+disk, every thermal frame has a matching 16-bit TIFF, and there are no
+copy-collision duplicates anywhere. Nothing here needs working around.
 
-## The class set
+The test split is real: 3,749 annotated frames sampled — per FLIR — from
+*completely independent* video sequences, which is what makes a held-out
+measurement meaningful. See [doc 04](04-reading-the-metrics.md).
 
-1.3 annotates four classes. Three are used:
+## Classes
 
-| class | train boxes | val boxes |
-| --- | ---: | ---: |
-| car | 36,209 | — |
-| person | 19,931 | — |
-| bicycle | 3,087 | — |
-| **dog** | **244** | **16** |
+`coco.json` declares all 80 COCO categories. Sixteen are used, and the tail is
+unusable:
 
-`dog` is excluded by default. mAP weights every class equally, so a class
-whose AP is decided by sixteen validation boxes would move the headline number
-by more than the thing being ablated -- and it would move it differently
-between arms, for reasons that have nothing to do with the arms. Pass
-`--classes person bicycle car dog` to put it back.
+| class | train boxes | | class | train boxes |
+| --- | ---: | --- | --- | ---: |
+| car | 73,623 | | truck | 829 |
+| person | 50,478 | | skateboard | 29 |
+| sign | 20,770 | | stroller | 15 |
+| light | 16,198 | | scooter | 15 |
+| bike | 7,237 | | deer | 8 |
+| bus | 2,245 | | train | 5 |
+| other vehicle | 1,373 | | dog | 4 |
+| motor | 1,116 | | | |
+| hydrant | 1,095 | | | |
 
-## The label format, and the trap in it
+**Five are kept by default: `person`, `bike`, `car`, `light`, `sign`.** mAP
+weights every class equally, so `dog` at four training boxes would carry the
+same weight as `car` at 73,623 — and would move between ablation arms for
+reasons that have nothing to do with the arms.
 
-YOLO wants `class cx cy w h`, normalised. Two details in the conversion are
-worth stating because getting them wrong fails quietly:
+`light` and `sign` are in the default set deliberately, rather than stopping at
+the obvious three. They are the two large classes a thermal sensor should find
+*harder* than a visible one: a traffic light signals with colour and a street
+sign with printed contrast, and an infrared sensor sees neither. Without them
+[the modality comparison](03-thermal-vs-visible.md) only asks a question it
+already knows the answer to.
 
-- **Boxes that overhang the sensor edge** are clipped, and boxes narrower than
-  a pixel after clipping are dropped. FLIR ships a handful of zero-width
-  boxes; Ultralytics turns those into NaN loss somewhere in the first epoch.
-- **A frame with no surviving object gets an empty `.txt`, not no file.**
-  Ultralytics reads an empty label as a background frame, which is exactly
-  what it is. Omitting the file instead throws away a negative example, and
-  844 of the 7,543 training frames are background.
-
-## A download with pieces missing
-
-The copy this repo was developed against is incomplete, in a way worth
-documenting because it shaped the code:
-
-- **No `thermal_annotations.json` at all**, in any split. The converter's
-  primary path cannot run.
-- **Pre-converted YOLO labels survived** for train and val, covering the full
-  id range: 8,862 and 1,366 unique stems, matching FLIR's own counts.
-- **The 16-bit TIFFs are complete** — 8,862 train, 1,366 val.
-- **The 8-bit JPEGs are short**: 7,543 unique of 8,862 in train (14.9%
-  missing), 1,091 of 1,366 in val (20.1% missing).
-- **The copy is littered with Finder duplicates** — `"FLIR_01437 2.jpeg"` and
-  friends, created by moving the dataset between machines. 653 train labels,
-  401 train TIFFs and 340 train JPEGs; 95 val labels.
-
-Per source, counted:
-
-| split | source | files | unique | `" 2"` copies |
-| --- | --- | ---: | ---: | ---: |
-| train | YOLO labels | 9,515 | 8,862 | 653 |
-| train | 16-bit TIFF | 9,263 | 8,862 | 401 |
-| train | 8-bit JPEG | 7,883 | 7,543 | 340 |
-| val | YOLO labels | 1,461 | 1,366 | 95 |
-| val | 16-bit TIFF | 1,366 | 1,366 | 0 |
-| val | 8-bit JPEG | 1,091 | 1,091 | 0 |
-
-The duplicates are not cosmetic. A duplicate frame trains twice, and one that
-survives in only some directories trains twice in only some arms -- which is
-precisely what happened before they were filtered (see
-[doc 02](02-radiometry-and-agc.md)). Nothing legitimate in FLIR ends in a
-space and a number, so they are dropped by pattern in `_stems` and
-`adopted_labels`.
-
-Three features exist because of this. `--adopt-labels` reads an existing YOLO
-label directory instead of a COCO JSON, remapping class ids to the requested
-set (the source order has to be named, since nothing in a `.txt` records it).
-Copy-collision duplicates are filtered by pattern. And the frame list is
-intersected across *every* image source rather than the one the current arm
-needs -- see [`frame_index`](../src/thermaldet/convert.py).
-
-Net result, and what every number in this repo is measured on:
-
-| split | frames | boxes | background frames |
-| --- | ---: | ---: | ---: |
-| train | 7,543 | 59,227 | 844 |
-| val | 1,091 | 9,390 | 5 |
-
-**There is no test split**, because `video/thermal_annotations.json` is one of
-the missing files. That is a real limitation and it is called out in
-[doc 03](03-reading-the-metrics.md): every number here is validation, and
-`best.pt` is selected on validation, so every number is optimistic. Recovering
-that one JSON would fix it, and the converter already handles it.
+Categories are matched by **name**, not id. v2 keeps COCO's original numbering,
+so the ids are neither contiguous nor in the order the YOLO indices need
+(`light` is 10, `sign` is 12) — and thermal and visible have to produce the
+same index for the same class or the modality comparison is comparing two
+different label spaces.
 
 ## Profile
 
 ```bash
+uv run thermaldet convert --arm agc
 uv run thermaldet profile
 ```
 
-| split | frames | boxes | boxes/frame | small % | medium % | large % |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| train | 7,543 | 59,227 | 7.9 | 58.1 | 35.8 | 6.1 |
-| val | 1,091 | 9,390 | 8.6 | 46.6 | 44.9 | 8.5 |
+**Thermal**, five classes:
 
-"Small" is COCO's convention: box area under 32x32 px. Median box heights are
-31 px for `car`, 34 px for `person`, 35 px for `bicycle` -- so the objects are
-small but not *aerial*-small, and unlike a drone dataset the frames are 640 px
-wide to begin with. **Input resolution is therefore not the story here**, which
-is what makes the two axes this repo does test the interesting ones.
+| split | frames | boxes | boxes/frame | small % | background frames |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| train | 10,742 | 168,238 | 15.7 | 74.6 | 280 |
+| val | 1,144 | 16,244 | 14.2 | 75.1 | 19 |
+| test | 3,749 | 55,371 | 14.8 | **87.3** | 256 |
+
+"Small" is COCO's convention: box area under 32×32 px. Three things follow.
+
+**The scenes are dense** — 15.7 objects per frame, against 7 on COCO.
+
+**The objects are small.** Three quarters of them are "small" by COCO's
+definition, in a frame only 640 px wide to begin with.
+
+| class | train boxes | share | median box height |
+| --- | ---: | ---: | ---: |
+| car | 73,622 | 43.8% | 22 px |
+| person | 50,474 | 30.0% | 26 px |
+| sign | 20,747 | 12.3% | **11 px** |
+| light | 16,158 | 9.6% | **16 px** |
+| bike | 7,237 | 4.3% | 30 px |
+
+An 11-pixel sign sits close to the floor of what a stride-8 detection head can
+resolve. That is worth knowing before reading any per-class number.
+
+**The test split is harder than training.** 87.3% small against 74.6%, because
+the test videos were sampled at 30 fps from continuous footage rather than
+curated for detector training. Expect the held-out number to drop by more than
+the usual selection bias alone would explain.
+
+## Lighting metadata
+
+Each image record carries `extra_info` with `hours`, `scene`, `weather` and
+`video_id`. Coverage of `hours` is uneven, and on the test split it is absent
+entirely:
+
+| split | frames | `hours` present |
+| --- | ---: | ---: |
+| `images_thermal_train` | 10,742 | 3,144 (29%) |
+| `images_thermal_val` | 1,144 | 236 (21%) |
+| `video_thermal_test` | 3,749 | **0** |
+| `images_rgb_train` | 10,318 | 10,266 (99.5%) |
+
+`index.json` fills most of the gap: it carries per-video `tags`, and 6 of the 8
+test videos, 126 of 133 train videos and 16 of 17 val videos are tagged with a
+lighting condition. Since FLIR sampled each video under one condition,
+propagating the video-level tag to its frames is defensible — as an
+**imputation**, stated as one.
+
+Test split by video tag: night 1,497, dawn 1,033, day 428, **untagged 791**.
+
+Two caveats for anyone who wants to split results by lighting. Ten of the 133
+training videos carry *conflicting* `hours` values across their own frames and
+should be dropped rather than guessed at. And 21% of the test split has no tag
+at all. No experiment in this repo currently splits by lighting; the metadata
+is documented because it is there and it is the obvious next axis.
+
+## Two things that constrain what can be compared
+
+**The cameras differ.** Thermal is a Tau 2 at 45° horizontal field of view,
+640×512. Visible is a BlackFly S at 52.8°, and its frames come in five
+resolutions from 720×480 to 2048×1536. So the two spectra are **not**
+pixel-aligned and their annotation counts differ. What that does and does not
+allow is [doc 03](03-thermal-vs-visible.md).
+
+**The test videos are not one camera either.** Six of the eight are Tau 2 at
+45°; two are a Boson ADK at 50°. A hardware shift inside the held-out split is
+worth knowing about before attributing a per-video difference to the model.
+
+## Label format
+
+YOLO wants `class cx cy w h`, normalised. Two details in the conversion fail
+quietly if you get them wrong:
+
+- **Boxes are clipped to the frame**, and boxes under a pixel wide after
+  clipping are dropped. FLIR ships a handful of zero-width boxes; Ultralytics
+  turns those into NaN loss an hour into a run.
+- **A frame with no kept object gets an empty `.txt`, not no file.**
+  Ultralytics reads an empty label as background, which is what it is. Omitting
+  the file throws away a negative, and 280 training frames are background.

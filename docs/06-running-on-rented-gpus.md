@@ -21,7 +21,7 @@ configs/profiles/cuda24.yaml   batch, workers, device, amp, cache
 
 `load_profile` rejects any profile that tries to set `epochs` or `imgsz`, and
 [a test](../tests/test_profiles.py) asserts every arm resolves to the same
-batch under one profile. The payoff is that all six runs share `batch: 32` on
+batch under one profile. The payoff is that all seven runs share `batch: 32` on
 one card, so the only thing that differs between them is the line their config
 changed.
 
@@ -44,7 +44,7 @@ leaves memory unused.
 ## Measure before paying
 
 ```bash
-uv run thermaldet probe pretrained global_map
+uv run thermaldet probe pretrained rgb
 ```
 
 Two short runs per config at different data fractions, then solve
@@ -58,9 +58,10 @@ for both terms. **Do not time one short run and divide by the fraction.**
 shrink with the data, so dividing by `fraction` scales it up along with
 everything else. At `fraction=0.1` the estimate carries ten copies of it.
 
-That error bites harder here than on a large dataset. 7,543 frames at 640x512
-make short epochs, so fixed overhead is a large share of each one, and a naive
-estimate can rank two configs in the wrong order. The
+That error bites less on v2 than it would on a small dataset -- 10,742 frames
+at 640x512 still make fairly short epochs -- but it is the kind of error that
+ranks two configs in the wrong order, which is worse than being uniformly
+optimistic. The
 [test suite](../tests/test_profiles.py) pins the arithmetic.
 
 `probe` reports **reserved** GPU memory, not allocated. PyTorch's caching
@@ -74,9 +75,11 @@ them per sample. That work happens on the CPU. On a 4090 the GPU is likely to
 spend a good fraction of each step waiting for it, which has two consequences
 worth knowing before reading any timing:
 
-- **`cache: ram` matters more than the card does.** The whole dataset is a few
-  GB decoded; keeping it in RAM removes JPEG decode from the loop entirely.
-  It is set in every CUDA profile for that reason.
+- **`cache: ram` matters more than the card does.** 10,742 640x512 greyscale
+  frames are a few GB decoded; keeping them in RAM removes JPEG decode from
+  the loop entirely. It is set in every CUDA profile for that reason. The
+  `rgb` arm is the exception worth watching -- its source frames are up to
+  2048x1536, so it caches larger and decodes slower.
 - **Renting a bigger card may buy nothing.** If the bottleneck is CPU-side
   augmentation, a 48 GB A6000 finishes at nearly the same wall clock as a 4090
   and costs more per hour. Check the vCPU count on the instance before paying
@@ -92,12 +95,13 @@ model size, the pipeline is input-bound.
   need a host driver new enough for it. An old driver fails only once torch is
   imported — five paid minutes and 5 GB after `uv sync` started.
   `setup_remote.sh` checks the driver first, before installing anything.
-- **Disk.** The FLIR download is ~18 GB, the three preprocessing arms add
-  ~3.5 GB, and the CUDA venv is ~8 GB. Rentals commonly default to 10 GB
-  total, which is the single most common way an instance gets wasted.
+- **Disk.** The FLIR v2 download is ~13 GB, the four arms add ~6 GB, and the
+  CUDA venv is ~8 GB. Rentals commonly default to 10 GB total, which is the
+  single most common way an instance gets wasted.
 - **The dataset cannot be scripted.** FLIR is behind a registration form, so
-  it has to be moved onto the box by hand (`scp`, or an rclone remote). Plan
-  for that; on a slow uplink it is the longest step in the whole process.
+  the ~13 GB has to be moved onto the box by hand (`scp`, or an rclone
+  remote). Plan for it; on a slow uplink it is the longest step in the whole
+  process.
 
 ## Provisioning
 
@@ -109,17 +113,17 @@ Checks the GPU, the driver's CUDA version and the disk *before* installing
 anything, then clones and syncs from `uv.lock` so the environment matches the
 one the results came from.
 
-Then, inside tmux so a dropped connection does not kill six runs:
+Then, inside tmux so a dropped connection does not kill seven runs:
 
 ```bash
-make arms ADOPT="--adopt-labels Dataset/FLIR_ADAS_1_3/yolo/labels"
-uv run thermaldet probe pretrained global_map
+make arms
+uv run thermaldet probe pretrained rgb
 tmux new -s train
 ./scripts/run_sweep.sh
 ```
 
 `run_sweep.sh` deliberately does not `set -e`. A config that dies must not
-cancel the five after it — the entire point of running unattended is to come
+cancel the six after it — the entire point of running unattended is to come
 back to as much finished work as possible. It logs each run separately and
 prints a success/failure summary at the end.
 
@@ -141,4 +145,4 @@ logged is the specific failure that guards against.
 ## Before destroying the instance
 
 Pull `runs/` and `reports/`. A stopped instance still bills for its disk, and
-a destroyed one takes the only copy of six runs with it.
+a destroyed one takes the only copy of seven runs with it.

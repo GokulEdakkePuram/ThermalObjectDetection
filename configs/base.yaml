@@ -11,7 +11,7 @@ patience: 20
 # visible frames are larger and get downscaled to the same input, which is
 # fixed budget rather than an oversight -- a deployed detector has one. Both
 # spectra end up with objects of near-identical apparent size at 640; the
-# measurement is in docs/07.
+# measurement is in docs/03.
 imgsz: 640
 epochs: 60
 
@@ -36,7 +36,7 @@ train_args:
   #
   # They stay off for the RGB arm too, which is a deliberate handicap: the
   # modality comparison is only single-variable if the augmentation is the
-  # same on both sides. See docs/07.
+  # same on both sides. See docs/03.
   hsv_h: 0.0
   hsv_s: 0.0
   hsv_v: 0.4
