@@ -9,10 +9,10 @@ only real difference is where the JSON lives and what the splits are called::
     train/thermal_16_bit/*.tiff       (no 16-bit imagery)
     val/, video/                      images_thermal_val/, video_thermal_test/
 
-1.3 is the layout this project uses, for one reason: it ships the raw 16-bit
-radiometric TIFFs alongside the 8-bit JPEGs, and the difference between those
-two is the second ablation in this repo (see :mod:`thermaldet.radiometry`).
-v2 has more images and no 16-bit, so it supports the transfer ablation only.
+Both releases ship the raw 16-bit radiometric TIFFs that the second ablation
+needs -- 1.3 under ``thermal_16_bit``, v2 under ``analyticsData``. v2 also has
+~40% more frames, an annotated test split, and annotated RGB alongside the
+thermal, so it supports strictly more than 1.3 does.
 
 The output is one tree per preprocessing arm::
 
@@ -52,7 +52,9 @@ LAYOUT_V2 = {
 
 # Where each layout keeps its imagery, relative to the split directory.
 IMAGE_SUBDIR_V1 = {"agc": "thermal_8_bit", "raw": "thermal_16_bit"}
-IMAGE_SUBDIR_V2 = {"agc": "data"}
+# v2 keeps the 16-bit frames under `analyticsData`, which is easy to miss --
+# the release notes mention it once, in the Download Contents section.
+IMAGE_SUBDIR_V2 = {"agc": "data", "raw": "analyticsData"}
 
 # 1.3 annotates four classes. `dog` is excluded by default and that is a
 # deliberate call, not an oversight: it has 244 boxes in train and 16 in val,

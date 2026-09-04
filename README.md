@@ -56,14 +56,15 @@ FLIR has released this dataset twice and the two are not interchangeable.
 | splits | `train/`, `val/`, `video/` | `images_thermal_train/`, `images_thermal_val/`, `video_thermal_test/` |
 | annotations | `<split>/thermal_annotations.json` | `<split>/coco.json` |
 | 8-bit thermal | `thermal_8_bit/*.jpeg` | `data/*.jpg` |
-| **16-bit thermal** | `thermal_16_bit/*.tiff` | **not shipped** |
+| **16-bit thermal** | `thermal_16_bit/*.tiff` | `analyticsData/*.tiff` |
 | paired RGB | `RGB/*.jpg`, unannotated | annotated |
 | classes | person, bicycle, car, dog | person, bike, car |
 
-Both are COCO underneath, and the converter reads either. **1.3 is used here
-because it ships the raw 16-bit imagery**, which is what the second experiment
-needs. v2 has more frames and no 16-bit, so it supports the first experiment
-only.
+Both are COCO underneath, and the converter reads either. 1.3 is what the
+numbers below were measured on, because it was the copy available first. **v2
+supports strictly more** — see [the v2 assessment](docs/06-flir-v2.md) — and
+both releases ship the 16-bit imagery the second experiment needs. v2 keeps it
+under `analyticsData`, which the release notes mention exactly once.
 
 Categories are matched by **name**, never by id. 1.3 keeps COCO's original
 numbering (`person=1`, `car=3`, `dog=18`); v2 renumbered and renamed them. A
@@ -416,6 +417,8 @@ a checkpoint should be scored against.
   expectations recorded before each run
 - [05 — Running on rented GPUs](docs/05-running-on-rented-gpus.md) — profiles,
   calibrating a run before paying for it, and what wastes a rental
+- [06 — FLIR ADAS v2](docs/06-flir-v2.md) — audit of the newer release, what it
+  fixes, and what it makes newly possible
 
 ## Preserved weights
 

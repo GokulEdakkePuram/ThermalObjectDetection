@@ -143,13 +143,18 @@ class TestDetectLayout:
         assert layout.version == "1.3"
         assert layout.has_raw
 
-    def test_recognises_v2_and_knows_it_has_no_raw(self, tmp_path):
-        """v2 ships more frames and no 16-bit, so it supports the transfer
-        ablation and not the radiometry one."""
+    def test_recognises_v2_and_finds_its_16_bit_directory(self, tmp_path):
+        """v2 keeps the raw frames under `analyticsData`, not `thermal_16_bit`.
+
+        The release notes mention it once, and getting it wrong makes the
+        radiometry ablation look impossible on the newer release when it is
+        not.
+        """
         _touch(tmp_path / "images_thermal_train", [])
         layout = detect_layout(tmp_path)
         assert layout.version == "v2"
-        assert not layout.has_raw
+        assert layout.has_raw
+        assert layout.image_subdirs["raw"] == "analyticsData"
 
     def test_an_unrecognised_tree_fails_loudly(self, tmp_path):
         with pytest.raises(SystemExit, match="neither"):

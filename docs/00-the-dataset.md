@@ -7,7 +7,7 @@ FLIR has released this dataset twice, and the two are not interchangeable.
 | splits | `train/`, `val/`, `video/` | `images_thermal_train/`, `images_thermal_val/`, `video_thermal_test/` |
 | annotations | `<split>/thermal_annotations.json` | `<split>/coco.json` |
 | 8-bit thermal | `thermal_8_bit/*.jpeg` | `data/*.jpg` |
-| **16-bit thermal** | `thermal_16_bit/*.tiff` | **not shipped** |
+| **16-bit thermal** | `thermal_16_bit/*.tiff` | `analyticsData/*.tiff` |
 | paired RGB | `RGB/*.jpg`, unannotated | annotated, in `images_rgb_*` |
 | classes | person, bicycle, car, dog | person, bike, car |
 
@@ -17,10 +17,12 @@ detects which one it is looking at and reads either. Categories are matched by
 `car=3`, `dog=18`) and v2 renumbered and renamed them, so any hard-coded id
 map is silently wrong on one of the two.
 
-**This project uses 1.3**, for one reason: it ships the raw 16-bit radiometric
-TIFFs, and the difference between those and the 8-bit JPEGs is
-[the second ablation](02-radiometry-and-agc.md). v2 has more frames and no
-16-bit, so it supports the transfer ablation only.
+**The numbers here are measured on 1.3**, because that is the copy that was
+available first. Both releases ship the raw 16-bit radiometric TIFFs that
+[the second ablation](02-radiometry-and-agc.md) needs -- 1.3 under
+`thermal_16_bit`, v2 under `analyticsData`. v2 additionally has ~40% more
+frames, an annotated test split, and annotated RGB, so it supports strictly
+more. That assessment is [doc 06](06-flir-v2.md).
 
 ## What the frames are
 
