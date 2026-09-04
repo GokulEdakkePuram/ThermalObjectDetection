@@ -8,6 +8,7 @@ from thermaldet.config import load_config, resolve_device
 
 TRANSFER_ARMS = ["pretrained", "scratch", "frozen_stem", "frozen_backbone"]
 RADIOMETRY_ARMS = ["pretrained", "global_map", "p1p99_map"]
+MODALITY_ARMS = ["pretrained", "rgb"]
 
 
 def test_extends_deep_merges_train_args():
@@ -61,8 +62,8 @@ class TestAblationsStayComparable:
         assert arm.imgsz == control.imgsz
         assert arm.seed == control.seed
 
-    @pytest.mark.parametrize("name", RADIOMETRY_ARMS)
-    def test_radiometry_arms_share_everything_but_the_pixels(self, name):
+    @pytest.mark.parametrize("name", RADIOMETRY_ARMS + MODALITY_ARMS)
+    def test_pixel_arms_share_everything_but_the_pixels(self, name):
         control, arm = load_config("pretrained"), load_config(name)
 
         assert arm.model == control.model
@@ -77,6 +78,7 @@ class TestAblationsStayComparable:
             "frozen_backbone": "train_args",
             "global_map": "data",
             "p1p99_map": "data",
+            "rgb": "data",
         }
         for name, key in expected.items():
             arm = load_config(name)
@@ -86,6 +88,14 @@ class TestAblationsStayComparable:
                 if getattr(arm, field) != getattr(control, field)
             }
             assert differing == {key}, f"{name} differs in {sorted(differing)}, expected {{{key}}}"
+
+    def test_the_rgb_arm_keeps_the_thermal_augmentation(self):
+        """Hue and saturation jitter stay off on the visible arm too. It is a
+        handicap, and it is the price of the comparison being single-variable."""
+        control, rgb = load_config("pretrained"), load_config("rgb")
+
+        assert rgb.train_args == control.train_args
+        assert rgb.train_args["hsv_s"] == 0.0
 
     def test_the_two_frozen_arms_freeze_different_depths(self):
         assert load_config("frozen_stem").train_args["freeze"] == 2

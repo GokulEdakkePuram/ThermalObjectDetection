@@ -7,7 +7,15 @@ import pytest
 from thermaldet.config import load_config, load_profile
 from thermaldet.hardware import CPU, CUDA_LARGE, CUDA_MEDIUM, CUDA_SMALL, Hardware, auto_profile
 
-ARMS = ["pretrained", "scratch", "frozen_stem", "frozen_backbone", "global_map", "p1p99_map"]
+ARMS = [
+    "pretrained",
+    "scratch",
+    "frozen_stem",
+    "frozen_backbone",
+    "global_map",
+    "p1p99_map",
+    "rgb",
+]
 
 
 def test_profile_overrides_experiment_batch():

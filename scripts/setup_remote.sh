@@ -39,13 +39,13 @@ else
 fi
 
 echo "==> Checking disk space"
-# The FLIR 1.3 download is ~18 GB, the three preprocessing arms add ~3.5 GB,
-# and the CUDA venv is ~8 GB. Rentals default to 10 GB of disk, which is the
-# most common way an instance gets wasted.
+# The FLIR v2 download is ~13 GB, the four arms add ~6 GB, and the CUDA venv
+# is ~8 GB. Rentals default to 10 GB of disk, which is the most common way an
+# instance gets wasted.
 AVAIL_GB=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
 echo "    ${AVAIL_GB} GB available"
 if [ "${AVAIL_GB}" -lt 50 ]; then
-    echo "    WARNING: under 50 GB free. The dataset is ~18 GB, the arms ~3.5 GB and" >&2
+    echo "    WARNING: under 50 GB free. The dataset is ~13 GB, the arms ~6 GB and" >&2
     echo "    the venv ~8 GB. Re-rent with more disk before pulling anything." >&2
 fi
 
@@ -75,15 +75,13 @@ print(f'    {p.name}, {p.total_memory / 1024**3:.0f} GB, torch {torch.__version_
 cat <<'NEXT'
 
 Ready, except for the dataset -- FLIR ADAS is behind a registration form, so
-it cannot be fetched from here. Put the download at Dataset/FLIR_ADAS_1_3/
+it cannot be fetched from here. Put the download at Dataset/FLIR_ADAS_v2/
 (scp, or an rclone remote), then:
 
   make arms
-      Builds all three preprocessing arms. ~1 minute, ~3.5 GB.
-      Add ADOPT="--adopt-labels Dataset/FLIR_ADAS_1_3/yolo/labels" if the
-      download's thermal_annotations.json files are missing.
+      Builds all four arms: three thermal, one visible. ~2 minutes, ~6 GB.
 
-  uv run thermaldet probe pretrained global_map
+  uv run thermaldet probe pretrained rgb
       Calibrate before committing rental hours: confirms the profile's batch
       size fits, and projects how long the real runs take. Two fractions, so
       fixed per-epoch overhead is separated from the per-image rate.

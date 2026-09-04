@@ -1,0 +1,15 @@
+# Modality arm: the same experiment on the visible-spectrum frames.
+#
+# `data` is the only line that differs from `pretrained`. Same architecture,
+# same COCO initialisation, same schedule, same augmentation -- including the
+# hue and saturation jitter that base.yaml leaves off for the thermal arms.
+# That is a real handicap to RGB and it is deliberate: the comparison is only
+# single-variable if both sides are augmented identically.
+#
+# What this measures is not "which sensor carries more information". It is
+# "given one 640 px input budget, which sensor detects better" -- a deployment
+# question, and the one FLIR's own published baseline answers too.
+extends: base
+name: rgb
+data: configs/data/flir_rgb.yaml
+notes: "Modality ablation: visible spectrum. Only `data` differs from pretrained."

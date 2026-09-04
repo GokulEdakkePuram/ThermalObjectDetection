@@ -7,10 +7,11 @@ seed: 0
 workers: 8
 patience: 20
 
-# FLIR frames are 640x512, so imgsz 640 is the native resolution rather than a
-# choice. Unlike aerial imagery there is no downscaling to argue about here --
-# which is precisely why this repo's experiments are about what the sensor
-# hands the network, not about how much of the frame survives the resize.
+# Thermal frames are 640x512, so imgsz 640 is native rather than a choice. The
+# visible frames are larger and get downscaled to the same input, which is
+# fixed budget rather than an oversight -- a deployed detector has one. Both
+# spectra end up with objects of near-identical apparent size at 640; the
+# measurement is in docs/07.
 imgsz: 640
 epochs: 60
 
@@ -28,10 +29,14 @@ train_args:
   # flips are free and vertical flips would invent scenes that never occur.
   fliplr: 0.5
   flipud: 0.0
-  # Colour jitter is meaningless on a single-channel sensor replicated to three
-  # channels: HSV augmentation would only shift a grey axis. Turned off rather
-  # than left at the Ultralytics defaults, where it silently does nothing
-  # useful and costs dataloader time.
+  # Hue and saturation jitter do nothing on a single-channel sensor replicated
+  # to three channels -- there is only a grey axis to shift. They are off here
+  # rather than at the Ultralytics defaults, where they cost dataloader time
+  # for no effect.
+  #
+  # They stay off for the RGB arm too, which is a deliberate handicap: the
+  # modality comparison is only single-variable if the augmentation is the
+  # same on both sides. See docs/07.
   hsv_h: 0.0
   hsv_s: 0.0
   hsv_v: 0.4

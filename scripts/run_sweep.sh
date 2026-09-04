@@ -14,7 +14,7 @@ CONFIGS=("$@")
 if [ ${#CONFIGS[@]} -eq 0 ]; then
     # Control first, then the transfer axis, then radiometry. Ordered so that
     # an early stop still leaves a complete ablation rather than half of two.
-    CONFIGS=(pretrained scratch frozen_stem frozen_backbone global_map p1p99_map)
+    CONFIGS=(pretrained scratch frozen_stem frozen_backbone global_map p1p99_map rgb)
 fi
 
 TRACK="${TRACK:-wandb}"
@@ -68,7 +68,7 @@ fi
 if [ ${#WEIGHTS[@]} -gt 0 ]; then
     echo ""
     echo "==> Comparing ${#WEIGHTS[@]} checkpoints"
-    uv run thermaldet eval "${WEIGHTS[@]}" 2>&1 | tee "${LOG_DIR}/eval.log"
+    uv run thermaldet eval "${WEIGHTS[@]}" --split test 2>&1 | tee "${LOG_DIR}/eval.log"
 fi
 
 echo ""
