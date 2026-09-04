@@ -29,6 +29,28 @@ is the [modality prediction](03-thermal-vs-visible.md). Thermal is expected to
 win on `person` and `car` and lose on `light` and `sign`, and the aggregate
 mAP could come out flat while both halves of that are true.
 
+**`bike` is the class to distrust.** It has 7,237 training boxes but only 170
+in validation and **113 in the held-out test split**, out of 55,371. Its AP is
+decided by a hundred-odd boxes and carries a fifth of the headline mAP, so it
+will move between arms for reasons that have nothing to do with the arms --
+exactly the failure that got `dog` excluded, one order of magnitude up.
+
+It stays in the class set because it has enough *training* data to be learned
+and because dropping a class after seeing its numbers is how a result gets
+tuned into existence. The right response is to read it as noise and say so:
+quote mAP over the five, and note that a `bike` swing is not evidence. If two
+arms differ only through `bike`, they do not differ.
+
+Per-class counts in the thermal splits:
+
+| class | train | val | test |
+| --- | ---: | ---: | ---: |
+| car | 73,622 | 7,133 | 30,517 |
+| person | 50,474 | 4,470 | 12,323 |
+| sign | 20,747 | 2,471 | 5,660 |
+| light | 16,158 | 2,000 | 6,758 |
+| bike | 7,237 | **170** | **113** |
+
 **Report the test split, not validation.** v2 ships 3,749 annotated frames in
 `video_thermal_test`, sampled -- per FLIR -- from completely independent video
 sequences. `thermaldet eval` defaults to `--split test` for that reason: `best.pt`

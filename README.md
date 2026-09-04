@@ -249,6 +249,28 @@ temperature. So the prediction is per class, not in aggregate: thermal ahead on
 `person` and `car`, visible ahead on `light` and `sign`. **If thermal wins on
 all five, something is wrong with the comparison.**
 
+**Part of the answer is already in the labels.** The test split is 3,749
+*paired* frames — the same moments through both cameras — annotated
+independently:
+
+| class | thermal boxes | visible boxes | visible / thermal |
+| --- | ---: | ---: | ---: |
+| person | 12,323 | 11,278 | 0.92 |
+| car | 30,517 | 30,888 | 1.01 |
+| light | 6,758 | 17,817 | **2.64** |
+| sign | 5,660 | 17,210 | **3.04** |
+| bike | 113 | 446 | **3.95** |
+
+On identical moments, annotators found 2.6× more traffic lights and 3× more
+signs in the visible frames — and essentially the same number of cars. That is
+the predicted split, measured by the labelling process rather than a model.
+
+It also means the per-class AP comparison is **unfair in a known direction**:
+each detector is scored against its own spectrum's labels, so the thermal model
+is never penalised for the ~11,000 lights it cannot see. `person` and `car`
+compare cleanly; `light`, `sign` and `bike` do not, and the label counts are
+the better evidence for those.
+
 FLIR published a baseline on this exact test split (YOLOX-m, 640×640,
 AP@IoU=0.5): thermal 75.33 person / 77.23 car against visible 51.42 / 55.79.
 Different architecture, so a sanity check rather than a leaderboard row.
@@ -290,8 +312,10 @@ arm).
 | `pretrained` (thermal) | | | | | | |
 | `rgb` (visible) | | | | | | |
 
-Read [docs/04](docs/04-reading-the-metrics.md) before quoting any single
-number from here.
+`bike` has **113 boxes** in the held-out split and carries a fifth of the mAP,
+so a swing in that column is noise rather than a result. Read
+[docs/04](docs/04-reading-the-metrics.md) before quoting any single number from
+here.
 
 ---
 
