@@ -171,6 +171,11 @@ curl -fsSL https://raw.githubusercontent.com/GokulEdakkePuram/ThermalObjectDetec
 cd ~/thermaldet
 ```
 
+Run `df -h` first. Some templates mount the rented volume away from `$HOME` —
+`/workspace` is the usual one — and the container's own filesystem can be only
+a few GB. If that is the case here, set `WORKDIR=/workspace/thermaldet` before
+the curl; the disk check measures whichever filesystem `WORKDIR` will live on.
+
 **3. Build the arms and calibrate.**
 
 ```bash

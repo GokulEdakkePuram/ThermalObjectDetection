@@ -10,6 +10,9 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/GokulEdakkePuram/ThermalObjectDetection.git}"
+# Some templates mount the rented disk somewhere other than $HOME -- /workspace
+# is the usual one -- and the container's own filesystem can be a few GB. Set
+# WORKDIR to wherever `df -h` says the space actually is.
 WORKDIR="${WORKDIR:-$HOME/thermaldet}"
 
 echo "==> Checking for a GPU"
@@ -46,12 +49,17 @@ echo "==> Checking disk space"
 # Peak is therefore around 45 GB before any run writes a checkpoint. vast.ai
 # defaults to 10 GB unless you move the slider, which is the single most
 # common way an instance gets wasted.
-AVAIL_GB=$(df -Pk "$HOME" | awk 'NR==2 {print int($4/1048576)}')
+# Measured on the filesystem WORKDIR will live on, not on $HOME, so that
+# overriding WORKDIR onto the big volume is actually checked.
+mkdir -p "$(dirname "${WORKDIR}")"
+AVAIL_GB=$(df -Pk "$(dirname "${WORKDIR}")" | awk 'NR==2 {print int($4/1048576)}')
 echo "    ${AVAIL_GB} GB available"
 if [ "${AVAIL_GB}" -lt 60 ]; then
     echo "    WARNING: under 60 GB free. Peak usage is ~45 GB (zip + unpacked" >&2
     echo "    dataset + venv), before arms or checkpoints. Re-rent with more disk" >&2
     echo "    now rather than discovering this three hours in." >&2
+    echo "    If the rented volume is mounted elsewhere, re-run with" >&2
+    echo "    WORKDIR=/workspace/thermaldet (check \`df -h\`)." >&2
 fi
 
 echo "==> Installing prerequisites"
