@@ -91,41 +91,138 @@ model size, the pipeline is input-bound.
 
 ## Choosing a box
 
-- **CUDA version.** The pinned torch wheels bundle their own CUDA runtime and
-  need a host driver new enough for it. An old driver fails only once torch is
-  imported — five paid minutes and 5 GB after `uv sync` started.
-  `setup_remote.sh` checks the driver first, before installing anything.
-- **Disk.** The FLIR v2 download is ~13 GB, the four arms add ~6 GB, and the
-  CUDA venv is ~8 GB. Rentals commonly default to 10 GB total, which is the
-  single most common way an instance gets wasted.
-- **The dataset cannot be scripted.** FLIR is behind a registration form, so
-  the ~13 GB has to be moved onto the box by hand (`scp`, or an rclone
-  remote). Plan for it; on a slow uplink it is the longest step in the whole
-  process.
+- **CUDA 13, specifically.** `uv.lock` pins torch 2.11 against a CUDA 13
+  runtime — `nvidia-cudnn-cu13`, `nvidia-nccl-cu13`, `cuda-toolkit` 13.x — so
+  the host needs a driver supporting CUDA 13.0 or newer, roughly **580+**. A
+  12.x driver fails only once torch is first imported, which is five paid
+  minutes and 5 GB after `uv sync` started. Most vast.ai listings are still on
+  12.x, so **filter for it before renting**; `setup_remote.sh` checks the
+  driver before installing anything, but by then you have already paid for the
+  instance.
+- **Disk: ask for 75 GB.** The zip is ~13 GB and has to coexist with its
+  unpacked copy during extraction, the four arms add ~6 GB, and the CUDA 13
+  venv is ~12 GB. Peak is around 45 GB before a single checkpoint is written.
+  vast.ai defaults the disk slider to 10 GB, which is the single most common
+  way an instance gets wasted.
+- **vCPU count matters more than you would think.** This pipeline is
+  dataloader-bound (see above), and mosaic composites four frames per sample.
+  A 4090 behind 4 vCPUs will idle. Prefer listings with 8+ vCPUs; it is
+  usually cheaper than moving up a GPU tier for the same wall clock.
 
-## Provisioning
+## Getting the dataset onto the box
+
+FLIR is behind a registration form, so the dataset cannot be fetched from
+source on an unattended machine. Keep your own copy of the zip in Google Drive
+and pull it from there:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GokulEdakkePuram/ThermalObjectDetection/main/scripts/setup_remote.sh | bash
+GDRIVE_ID=<file id> ./scripts/fetch_dataset.sh
+# or paste the share URL:
+./scripts/fetch_dataset.sh 'https://drive.google.com/file/d/<id>/view?usp=sharing'
 ```
 
-Checks the GPU, the driver's CUDA version and the disk *before* installing
-anything, then clones and syncs from `uv.lock` so the environment matches the
-one the results came from.
+The file must be shared as **"Anyone with the link"**. Three things this
+routinely goes wrong on, all handled:
 
-Then, inside tmux so a dropped connection does not kill seven runs:
+- **A file that still requires sign-in** returns an HTML login page, and the
+  downloader saves it under the `.zip` name without complaint. The script
+  checks the size and prints the first few hundred bytes rather than letting
+  `unzip` fail confusingly 20 minutes later.
+- **Drive's public-download quota.** "Too many users have viewed or downloaded
+  this file recently" is a per-file counter that clears in about a day. The
+  reliable workaround is to copy the file inside your own Drive (right-click →
+  Make a copy) and use the new id, which starts a fresh counter.
+- **The archive's shape.** Some exports put the six split directories at the
+  root, some nest them under a folder. The script finds whichever level holds
+  `images_thermal_train/` and moves that.
+
+It verifies what it extracted — all six `coco.json` files plus
+`analyticsData/`, without which the 16-bit arms cannot be built — and deletes
+the zip afterwards to get 13 GB back. `KEEP_ZIP=1` to keep it.
+
+`setup_remote.sh` calls this automatically when `GDRIVE_ID` is set in the
+environment.
+
+If Drive is being difficult, `scp` is the fallback:
 
 ```bash
-make arms
-uv run thermaldet probe pretrained rgb
+scp -P <port> flir_adas_v2.zip root@<host>:~/thermaldet/Dataset/
+```
+
+## The vast.ai run, start to finish
+
+**1. Rent.** Filter on, in order of how expensive the mistake is:
+
+| filter | value | why |
+| --- | --- | --- |
+| CUDA version | **≥ 13.0** | the lockfile's torch needs it; a 12.x box is wasted |
+| disk | **75 GB** | the slider defaults to 10; peak need is ~45 GB |
+| vCPUs | **8+** | the pipeline is dataloader-bound, not GPU-bound |
+| GPU | RTX 4090 / 3090 | 24 GB, the `cuda24` profile's tier |
+
+A 4090 with 4 vCPUs will finish no faster than a 3090 with 12, and costs more.
+
+**2. Provision.** One command, which checks the driver, the disk and the GPU
+*before* installing 5 GB of wheels:
+
+```bash
+export GDRIVE_ID=<your file id>
+curl -fsSL https://raw.githubusercontent.com/GokulEdakkePuram/ThermalObjectDetection/main/scripts/setup_remote.sh | bash
+cd ~/thermaldet
+```
+
+**3. Build the arms and calibrate.**
+
+```bash
+make arms                                  # ~2 min, ~6 GB
+uv run thermaldet probe pretrained rgb     # ~5 min, tells you what the sweep costs
+```
+
+Read the probe output before starting the sweep. If the projected total is
+wildly more than you budgeted, that is the moment to change something — not
+three runs in.
+
+**4. Train.** Inside tmux, so a dropped SSH connection does not kill seven
+runs:
+
+```bash
+export WANDB_API_KEY=<key from wandb.ai/authorize>
 tmux new -s train
 ./scripts/run_sweep.sh
 ```
 
+Detach with `ctrl-b d`, reattach with `tmux attach -t train`. The sweep logs
+each run separately under `logs/`, scores every checkpoint that finished on
+the held-out test split, and prints a success/failure summary at the end.
+
+**5. Get the results off before destroying anything.**
+
+```bash
+# from your laptop
+scp -P <port> -r root@<host>:~/thermaldet/reports .
+scp -P <port> -r root@<host>:~/thermaldet/runs/train .
+```
+
+`reports/` is small and holds the tables. `runs/train/` is a few hundred MB
+with the checkpoints and each run's resolved config. If you tracked with W&B
+the metrics are already safe, but the weights are not.
+
+**6. Destroy the instance.** A stopped instance still bills for its disk.
+
+## Provisioning, in one command
+
+```bash
+GDRIVE_ID=<file id> bash <(curl -fsSL https://raw.githubusercontent.com/GokulEdakkePuram/ThermalObjectDetection/main/scripts/setup_remote.sh)
+```
+
+Checks the GPU, the driver's CUDA version and the disk *before* installing
+anything, then clones, syncs from `uv.lock` so the environment matches the one
+the results came from, fetches the dataset if `GDRIVE_ID` is set, and confirms
+torch can actually see the card.
+
 `run_sweep.sh` deliberately does not `set -e`. A config that dies must not
 cancel the six after it — the entire point of running unattended is to come
-back to as much finished work as possible. It logs each run separately and
-prints a success/failure summary at the end.
+back to as much finished work as possible.
 
 ## Tracking
 
@@ -145,4 +242,5 @@ logged is the specific failure that guards against.
 ## Before destroying the instance
 
 Pull `runs/` and `reports/`. A stopped instance still bills for its disk, and
-a destroyed one takes the only copy of seven runs with it.
+a destroyed one takes the only copy of seven runs with it. W&B keeps the
+metrics but not the weights.

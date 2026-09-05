@@ -29,7 +29,9 @@ runs.
 ## Quickstart
 
 Requires [uv](https://docs.astral.sh/uv/) and the FLIR ADAS v2 download placed
-at `Dataset/FLIR_ADAS_v2/`.
+at `Dataset/FLIR_ADAS_v2/`. On a rented box,
+`GDRIVE_ID=<id> ./scripts/fetch_dataset.sh` pulls it from your own Google
+Drive copy — see [docs/06](docs/06-running-on-rented-gpus.md).
 
 ```bash
 make setup      # install dependencies into .venv
@@ -364,7 +366,8 @@ src/thermaldet/
   predict.py      inference, rendering raw input through the right mapping
   tracking.py     W&B / MLflow wiring
   export.py       ONNX / CoreML / TorchScript export
-scripts/          provisioning and unattended sweeps for a rented GPU box
+scripts/          provisioning, dataset fetch and unattended sweeps for a
+                  rented GPU box
 docs/             the reasoning, written as it was worked out
 tests/            81 tests, none needing the dataset or a GPU (`make test`)
 Dockerfile        pinned training image
